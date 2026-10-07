@@ -12,8 +12,9 @@
   const R = 11;              // 球半徑
   const CORNER_GAP = 32;     // 角袋開口：庫邊從角落算起多遠才開始
   const SIDE_GAP = 22;       // 中袋開口半寬
-  const MAX_SPEED = 5500;    // 最大出桿速度（單位/秒，約 14 m/s，接近真實大力開球）
-  const POWER_CURVE = 1.9;   // 力道條非線性：前段細膩控制，後段才大力
+  const MAX_SPEED = 3600;        // 一般擊球的最大出桿速度（單位/秒，約 9 m/s）
+  const MAX_BREAK_SPEED = 5500;  // 開球的最大出桿速度（約 14 m/s，接近真實大力開球）
+  const POWER_CURVE = 1.2;       // 力道條略呈非線性：輕球好控制，但中段不會太弱
   const ROLL_DECEL = 70;     // 滾動摩擦減速度
   const SLIDE_DECEL = 620;   // 滑動摩擦減速度（決定塞的效果能維持多久）
   const SPIN_DECEL = 14;     // 側旋（左右塞）衰減，rad/s²
@@ -124,13 +125,13 @@
 
   // 模擬一桿。spinX：左右塞（右為正），spinY：高低桿（上為正），範圍為單位圓。
   // 回傳逐格位置與旋轉（30fps）、音效事件、首次碰撞球、落袋球。
-  function simulateShot(ballsIn, angle, power, spinX = 0, spinY = 0) {
+  function simulateShot(ballsIn, angle, power, spinX = 0, spinY = 0, isBreak = false) {
     const balls = ballsIn.map(b => ({
       id: b.id, x: b.x, y: b.y, vx: 0, vy: 0, wx: 0, wy: 0, wz: 0,
       potted: b.potted, q: (b.q || [0, 0, 0, 1]).slice(),
     }));
     const cue = balls[0];
-    const speed = Math.pow(Math.max(0.02, Math.min(1, power)), POWER_CURVE) * MAX_SPEED;
+    const speed = Math.pow(Math.max(0.02, Math.min(1, power)), POWER_CURVE) * (isBreak ? MAX_BREAK_SPEED : MAX_SPEED);
     const dx = Math.cos(angle), dy = Math.sin(angle);
     let sl = Math.hypot(spinX, spinY);
     if (sl > 1) { spinX /= sl; spinY /= sl; }
@@ -310,7 +311,7 @@
   const isCueBlocked = (balls, angle, spinX, spinY) => cueElevation(balls, angle, spinX, spinY) > CUE_MAX_ELEVATION;
 
   return {
-    W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_TIP_OFFSET,
+    W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
     CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
     rackBalls, simulateShot, closestOnSegment, cueElevation, isCueBlocked,
   };

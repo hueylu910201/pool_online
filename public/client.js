@@ -1063,6 +1063,9 @@ bar.addEventListener('pointercancel', () => { pointerMode = null; power = 0; upd
 function updatePowerBar() {
   $('powerFill').style.width = (power * 100).toFixed(1) + '%';
   bar.classList.toggle('disabled', !canShoot());
+  const isBreak = !!(state && state.game && state.game.isBreak);
+  const label = (isBreak ? '開球力道加成' : '力道') + (power > 0 ? ` ${Math.round(power * 100)}%` : '（拖動後放開擊球）');
+  if ($('powerLabel').textContent !== label) $('powerLabel').textContent = label;
 }
 
 function shoot() {
