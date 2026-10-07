@@ -20,6 +20,7 @@ let session = loadSession();
 let state = null;          // 伺服器最新狀態
 let inFlight = null;       // 進行中那一桿的 shotId（從出桿到套用伺服器結果）
 let endState = null;       // 伺服器送來的這一桿結果，等本地播完再套用
+let waitingSince = 0;      // 本地播完、開始等伺服器結果的時間
 let balls = [];            // 目前畫面上的球 {id,x,y,potted,q,sink}
 let anim = null;           // 進行中的本地物理回放 { shot, start, shotId, local, nextEvent, pottedAt }
 let aimAngle = Math.PI;
@@ -74,6 +75,7 @@ function act(msg) {
 function handle(msg) {
   switch (msg.type) {
     case 'joined':
+      checkProtocol(msg.protocol);
       // （重新）連上時丟掉進行中的回放，等伺服器送來的最新狀態
       anim = null; inFlight = null; endState = null; shotPending = false;
       saveSession({ code: msg.code, token: msg.token });
@@ -108,6 +110,17 @@ function handle(msg) {
       if (inFlight === msg.shotId) { endState = msg.state; if (!anim) finishShot(); }
       else applyState(msg.state);
       break;
+    case 'syncState':
+      // 等不到結果時向伺服器要的最新狀態：直接採用
+      anim = null; inFlight = null; endState = null; shotPending = false;
+      applyState({ ...msg, type: 'state' });
+      break;
+    case 'shot':
+      // 舊版伺服器的格式：不要卡住，直接採用它給的結果
+      checkProtocol(1);
+      anim = null; inFlight = null; endState = null; shotPending = false;
+      applyState(msg.state);
+      break;
     case 'aim':
       oppAim = msg;
       break;
@@ -119,6 +132,22 @@ function handle(msg) {
       toast(msg.text);
       break;
   }
+}
+
+// 伺服器與網頁版本不同：網頁較舊就自動重新整理一次；伺服器較舊就提示（例如本機伺服器沒重開、Render 還在部署）
+function checkProtocol(serverVersion) {
+  const mine = window.Physics.PROTOCOL;
+  const sv = serverVersion || 1;
+  if (sv === mine) { $('versionWarn').classList.add('hidden'); return; }
+  if (sv > mine) {
+    let reloaded = false;
+    try { reloaded = sessionStorage.getItem('pool_reloaded') === String(sv); sessionStorage.setItem('pool_reloaded', String(sv)); } catch {}
+    if (!reloaded) { location.reload(); return; }
+    $('versionWarn').textContent = '遊戲已更新，請按 Ctrl + Shift + R 重新整理頁面';
+  } else {
+    $('versionWarn').textContent = '伺服器還是舊版本：請重新啟動伺服器（Ctrl + C 後再 npm start），或等 Render 部署完成後重新整理';
+  }
+  $('versionWarn').classList.remove('hidden');
 }
 
 function applyState(s) {
@@ -897,7 +926,13 @@ function render(now) {
   if (anim && stepShot(now)) {
     // 本地播完：伺服器結果已到就套用，還沒到就停在最後畫面等它
     anim = null;
+    waitingSince = now;
     if (endState) finishShot();
+  }
+  // 播完超過 4 秒還沒收到結果（訊息遺失、伺服器拒絕了這一桿等），主動向伺服器要目前狀態
+  if (!anim && inFlight !== null && !endState && now - waitingSince > 4000) {
+    waitingSince = now;
+    send({ type: 'sync' });
   }
   if (charging !== null) {
     if (canShoot()) { power = Math.min(1, (now - charging) / 1400); updatePowerBar(); sendAim(); }

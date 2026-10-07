@@ -210,7 +210,7 @@ function attach(ws, room, seat) {
   ws.room = room;
   ws.seat = seat;
   clearTimeout(room.cleanupTimer);
-  send(ws, { type: 'joined', code: room.code, token: p.token, seat });
+  send(ws, { type: 'joined', code: room.code, token: p.token, seat, protocol: P.PROTOCOL });
   sendStates(room);
 }
 
@@ -291,6 +291,11 @@ wss.on('connection', ws => {
           applyRules(g, seat, sim, room.players.map(p => p && p.name));
           room.players.forEach((p, i) => { if (p) send(p.ws, { type: 'shotEnd', shotId, state: stateFor(room, i) }); });
         });
+        break;
+      }
+      case 'sync': {
+        // 網頁等不到某一桿的結果時，主動要求目前狀態
+        if (room) send(ws, { ...stateFor(room, seat), type: 'syncState' });
         break;
       }
       case 'chat': {

@@ -7,6 +7,9 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.Physics = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
+  // 伺服器與網頁之間的通訊協定版本；兩邊不一致時網頁會提示或自動重新整理
+  const PROTOCOL = 2;
+
   const W = 1000;            // 檯面寬（內框）
   const H = 500;             // 檯面高
   const R = 11;              // 球半徑
@@ -362,7 +365,7 @@
   const isCueBlocked = (balls, angle, spinX, spinY) => cueElevation(balls, angle, spinX, spinY) > CUE_MAX_ELEVATION;
 
   return {
-    W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
+    PROTOCOL, W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
     CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
     rackBalls, createShot, simulateShot, closestOnSegment, cueElevation, isCueBlocked, surfaceDrop,
   };
