@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-const { W, H, R, POCKETS, CUSHIONS, HEAD_X, FOOT_X, MAX_TIP_OFFSET, closestOnSegment } = window.Physics;
+const { W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_TIP_OFFSET, closestOnSegment } = window.Physics;
 const RAIL = 46;
 const CUSHION_H = 15;
 const RAIL_TOP = 17;
@@ -366,7 +366,7 @@ function tableOutline(inside) {
   for (const c of [[L, T], [Rt, T], [Rt, B], [L, B]]) items.push({ s: rel(perim(c[0], c[1])), pts: [c] });
   const cuts = [];
   for (const p of POCKETS) {
-    const r = p.r + 3;
+    const r = p.r + POCKET_HOLE_EXTRA;
     const hits = [];
     for (const [ex, ey, horiz] of [[0, T, 1], [0, B, 1], [L, 0, 0], [Rt, 0, 0]]) {
       const d = horiz ? ey - p.y : ex - p.x;
@@ -478,7 +478,7 @@ function buildTable() {
   });
   const bottomMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
   for (const p of POCKETS) {
-    const r = p.r + 3;
+    const r = p.r + POCKET_HOLE_EXTRA;
     const top = RAIL_TOP + 1, bot = -55;
     const tube = new THREE.Mesh(new THREE.CylinderGeometry(r - 2.8, r - 3.5, top - bot, 40, 1, true), holeMat);
     tube.position.set(p.x, (top + bot) / 2, p.y);

@@ -52,11 +52,14 @@
     return [x1 + dx * t, y1 + dy * t];
   }
 
+  // 球心一越過袋口洞的邊緣（與畫面上檯布挖洞的半徑 r+3 一致）就會失去支撐而落袋
+  const POCKET_HOLE_EXTRA = 3;
   function isPocketed(b) {
     if (b.x < 0 || b.x > W || b.y < 0 || b.y > H) return true;
     for (const p of POCKETS) {
       const dx = b.x - p.x, dy = b.y - p.y;
-      if (dx * dx + dy * dy < (p.r - 2) * (p.r - 2)) return true;
+      const hole = p.r + POCKET_HOLE_EXTRA;
+      if (dx * dx + dy * dy < hole * hole) return true;
     }
     return false;
   }
@@ -256,7 +259,7 @@
   }
 
   return {
-    W, H, R, POCKETS, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_TIP_OFFSET,
+    W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_TIP_OFFSET,
     rackBalls, simulateShot, closestOnSegment,
   };
 });
