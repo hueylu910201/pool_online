@@ -23,9 +23,8 @@ let anim = null;           // { frames, events, start, nextEvent }
 let aimAngle = Math.PI;
 let power = 0;
 let spinX = 0, spinY = 0;  // 擊球點：右為正、上為正（單位圓）
-let pointerMode = null;    // 'place' | 'pull' | 'aim' | 'rotate' | 'bar'
+let pointerMode = null;    // 'place' | 'pull' | 'aim' | 'bar'
 let pullStart = null;
-let lastPointerX = 0;
 let charging = null;       // 空白鍵蓄力開始時間
 let shotPending = false;
 let oppAim = null;
@@ -116,7 +115,7 @@ function applyState(s) {
   if (g) {
     const newShot = !prev || !prev.game || prev.game.shotId !== g.shotId;
     if (newShot || !isMyTurn() || !g.ballInHand) balls = g.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice(), sink: 0 }));
-    if (newShot) { oppAim = null; if (isMyTurn()) aimAngle = defaultAim(); }
+    if (newShot) { oppAim = null; if (isMyTurn()) camYaw = aimAngle = defaultAim(); }
   } else {
     balls = []; // 對手離開，房間回到等待狀態
     oppAim = null;
@@ -718,8 +717,8 @@ scene.add(breakZone);
 // ---------- 鏡頭 ----------
 let camMode = 'free';
 let camTween = null;
-let cuePitch = 0.2, cueDist = 260;
-const camTarget = new THREE.Vector3();
+// 球桿視角：鏡頭繞著白球，方向 camYaw 與瞄準方向分開（避免滑鼠瞄準時鏡頭跟著轉而互相追逐）
+let cuePitch = 0.2, cueDist = 260, camYaw = 0;
 
 function presetFor(mode) {
   const aspect = camera.aspect;
@@ -747,7 +746,8 @@ function setCamMode(mode) {
   try { localStorage.setItem('pool_cam', mode); } catch {}
   document.querySelectorAll('.cam-btn').forEach(b => b.classList.toggle('active', b.dataset.cam === mode));
   const hasCue = balls[0] && !balls[0].potted;
-  const to = mode === 'cue' && hasCue ? cueCamera(aimAngle) : presetFor(mode === 'cue' ? 'free' : mode);
+  if (mode === 'cue') camYaw = currentAimAngle();
+  const to = mode === 'cue' && hasCue ? cueCamera(camYaw) : presetFor(mode === 'cue' ? 'free' : mode);
   camTween = { fromPos: camera.position.clone(), fromTarget: controls.target.clone(), to, t0: performance.now(), dur: 650 };
 }
 
@@ -755,7 +755,7 @@ function updateCamera(now) {
   if (camTween) {
     const k = Math.min(1, (now - camTween.t0) / camTween.dur);
     const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
-    if (camMode === 'cue' && balls[0] && !balls[0].potted) camTween.to = cueCamera(currentAimAngle());
+    if (camMode === 'cue' && balls[0] && !balls[0].potted) camTween.to = cueCamera(camYaw);
     camera.position.lerpVectors(camTween.fromPos, camTween.to.pos, e);
     controls.target.lerpVectors(camTween.fromTarget, camTween.to.target, e);
     camera.lookAt(controls.target);
@@ -765,9 +765,10 @@ function updateCamera(now) {
   }
   if (camMode === 'cue') {
     controls.enabled = false;
-    // 動畫播放時鏡頭停住；其餘時間跟著瞄準方向
-    if (!anim && balls[0] && !balls[0].potted) {
-      const to = cueCamera(currentAimAngle());
+    // 動畫播放時鏡頭停住；其餘時間待在白球後方（右鍵拖曳可繞著白球轉）
+    // 擺放自由球時也先停住，否則鏡頭跟著白球移動會讓游標下的位置一直變
+    if (!anim && pointerMode !== 'place' && balls[0] && !balls[0].potted) {
+      const to = cueCamera(camYaw);
       camera.position.lerp(to.pos, 0.25);
       controls.target.lerp(to.target, 0.25);
     }
@@ -911,7 +912,19 @@ function sendAim(force) {
   send({ type: 'aim', angle: aimAngle, power, cueX: balls[0].x, cueY: balls[0].y, spinX, spinY });
 }
 
-// 球桿視角下的右鍵拖曳（調整俯仰）、雙指縮放
+// 瞄準方向在螢幕上的單位向量（CSS 像素）；拉桿力道依螢幕上的拖曳距離計算，各視角手感一致
+const projA = new THREE.Vector3(), projB = new THREE.Vector3();
+function screenAimDir() {
+  const cue = balls[0];
+  const r = canvas.getBoundingClientRect();
+  projA.set(cue.x, R, cue.y).project(camera);
+  projB.set(cue.x + Math.cos(aimAngle) * 60, R, cue.y + Math.sin(aimAngle) * 60).project(camera);
+  const dx = (projB.x - projA.x) * r.width / 2, dy = -(projB.y - projA.y) * r.height / 2;
+  const len = Math.hypot(dx, dy);
+  return len > 8 ? { x: dx / len, y: dy / len } : null;
+}
+
+// 球桿視角下的右鍵拖曳（繞白球旋轉、調整高低）、雙指縮放
 const touches = new Map();
 let rightDrag = null;
 
@@ -919,7 +932,7 @@ canvas.addEventListener('pointerdown', e => {
   ensureAudio();
   if (e.pointerType === 'touch') touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (camMode === 'cue' && (e.button === 2 || touches.size === 2)) {
-    rightDrag = { y: e.clientY };
+    rightDrag = { x: e.clientX, y: e.clientY };
     if (touches.size === 2) { pointerMode = null; power = 0; updatePowerBar(); }
     return;
   }
@@ -930,14 +943,11 @@ canvas.addEventListener('pointerdown', e => {
   canvas.setPointerCapture(e.pointerId);
   if (state.game.ballInHand && p && Math.hypot(p.x - cue.x, p.y - cue.y) < R * 2.2) {
     pointerMode = 'place';
-  } else if (camMode === 'cue') {
-    pointerMode = 'rotate';
-    lastPointerX = e.clientX;
   } else if (e.pointerType === 'mouse') {
     if (!p) return;
     pointerMode = 'pull';
     aimAt(p);
-    pullStart = p;
+    pullStart = { x: e.clientX, y: e.clientY, dir: screenAimDir(), table: p };
     power = 0;
   } else {
     pointerMode = 'aim';
@@ -957,33 +967,35 @@ canvas.addEventListener('pointermove', e => {
       const after = Math.hypot(c.x - d.x, c.y - d.y);
       cueDist = THREE.MathUtils.clamp(cueDist * before / Math.max(1, after), 90, 700);
       cuePitch = THREE.MathUtils.clamp(cuePitch + (e.clientY - prev.y) * 0.003, 0.03, 1.3);
+      camYaw += (e.clientX - prev.x) * 0.0025;
       return;
     }
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   }
   if (rightDrag) {
+    camYaw += (e.clientX - rightDrag.x) * 0.005;
     cuePitch = THREE.MathUtils.clamp(cuePitch + (e.clientY - rightDrag.y) * 0.004, 0.03, 1.3);
+    rightDrag.x = e.clientX;
     rightDrag.y = e.clientY;
     return;
   }
   if (!canShoot()) return;
-  if (pointerMode === 'rotate') {
-    aimAngle += (e.clientX - lastPointerX) * (e.shiftKey ? 0.0006 : 0.003);
-    lastPointerX = e.clientX;
+  const p = toTable(e);
+  if (pointerMode === 'pull') {
+    let back;
+    if (pullStart.dir) back = -((e.clientX - pullStart.x) * pullStart.dir.x + (e.clientY - pullStart.y) * pullStart.dir.y) / 180;
+    else if (p) back = -((p.x - pullStart.table.x) * Math.cos(aimAngle) + (p.y - pullStart.table.y) * Math.sin(aimAngle)) / 220;
+    else return;
+    power = Math.max(0, Math.min(1, back));
+    updatePowerBar();
     sendAim();
     return;
   }
-  const p = toTable(e);
   if (!p) return;
   if (pointerMode === 'place') {
     balls[0].x = Math.max(R, Math.min(state.game.isBreak ? HEAD_X : W - R, p.x));
     balls[0].y = Math.max(R, Math.min(H - R, p.y));
-  } else if (pointerMode === 'pull') {
-    const dx = Math.cos(aimAngle), dy = Math.sin(aimAngle);
-    const back = -((p.x - pullStart.x) * dx + (p.y - pullStart.y) * dy);
-    power = Math.max(0, Math.min(1, back / 220));
-    updatePowerBar();
-  } else if (pointerMode === 'aim' || (!pointerMode && e.pointerType === 'mouse' && camMode !== 'cue' && !e.buttons)) {
+  } else if (pointerMode === 'aim' || (!pointerMode && e.pointerType === 'mouse' && !e.buttons)) {
     aimAt(p);
   } else return;
   sendAim();
