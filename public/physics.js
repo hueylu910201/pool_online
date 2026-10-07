@@ -273,6 +273,9 @@
           shot.collided = true;
         }
         if (isPocketed(b)) {
+          // 記下落袋瞬間的速度與旋轉，讓畫面上的落袋動畫能接著滾下去（不影響物理結果）
+          b.potV = [b.vx, b.vy, b.wx, b.wy, b.wz];
+          b.potT = t;
           b.potted = true; b.vx = b.vy = b.wx = b.wy = b.wz = 0;
           shot.potted.push(b.id);
           shot.events.push({ t, type: 'p', v: 1 });
@@ -367,6 +370,6 @@
   return {
     PROTOCOL, W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
     CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
-    rackBalls, createShot, simulateShot, closestOnSegment, cueElevation, isCueBlocked, surfaceDrop,
+    rackBalls, createShot, simulateShot, closestOnSegment, rotateQuat, cueElevation, isCueBlocked, surfaceDrop,
   };
 });

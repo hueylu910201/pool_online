@@ -21,7 +21,7 @@ let state = null;          // 伺服器最新狀態
 let inFlight = null;       // 進行中那一桿的 shotId（從出桿到套用伺服器結果）
 let endState = null;       // 伺服器送來的這一桿結果，等本地播完再套用
 let waitingSince = 0;      // 本地播完、開始等伺服器結果的時間
-let balls = [];            // 目前畫面上的球 {id,x,y,potted,q,sink}
+let balls = [];            // 目前畫面上的球 {id,x,y,potted,q,drop}（drop：落袋時往下掉的距離）
 let anim = null;           // 進行中的本地物理回放 { shot, start, shotId, local, nextEvent, pottedAt }
 let aimAngle = Math.PI;
 let power = 0;
@@ -92,7 +92,7 @@ function handle(msg) {
       // 自己先開始播的這一桿被伺服器拒絕：取消並還原
       if (anim && anim.local) {
         anim = null; inFlight = null; endState = null;
-        balls = state.game.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice(), sink: 0 }));
+        balls = state.game.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice(), drop: 0 }));
       }
       shotPending = false;
       break;
@@ -156,7 +156,7 @@ function applyState(s) {
   const g = s.game;
   if (g) {
     const newShot = !prev || !prev.game || prev.game.shotId !== g.shotId;
-    if (newShot || !isMyTurn() || !g.ballInHand) balls = g.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice(), sink: 0 }));
+    if (newShot || !isMyTurn() || !g.ballInHand) balls = g.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice(), drop: 0 }));
     if (newShot) { oppAim = null; if (isMyTurn()) camYaw = aimAngle = defaultAim(); }
   } else {
     balls = []; // 對手離開，房間回到等待狀態
@@ -636,7 +636,7 @@ function updateBallMeshes() {
     if (!b || b.potted) { m.visible = false; continue; }
     m.visible = true;
     // 在袋口斜面上時球跟著往下沉一點
-    m.position.set(b.x, R - window.Physics.surfaceDrop(b.x, b.y) - (b.sink || 0) * 2.2 * R, b.y);
+    m.position.set(b.x, R - (b.drop ? b.drop : window.Physics.surfaceDrop(b.x, b.y)), b.y);
     const q = b.q || [0, 0, 0, 1];
     // 物理座標 (x, y, z朝下) → three (X, Y朝上, Z)
     tmpQ.set(q[0], -q[2], q[1], q[3]);
@@ -862,7 +862,8 @@ new ResizeObserver(resize).observe(view);
 // ---------- 一桿的即時物理回放 ----------
 // 出桿後在瀏覽器裡用與伺服器相同的物理逐步推進（邊算邊播），不必等伺服器回傳。
 // 播完後套用伺服器送來的權威結果（同為 V8 引擎時兩邊算出來完全一樣）。
-const SINK_TIME = 0.25; // 落袋後滑進洞裡的動畫秒數
+const SINK_TIME = 0.35; // 落袋動畫秒數（之後球已掉進袋底看不到）
+const FALL_G = 1800;    // 落袋時往下掉的重力加速度（畫面用）
 
 function startShot(p, local) {
   oppAim = null;
@@ -895,14 +896,27 @@ function stepShot(now) {
 
 function showSimBalls(t) {
   balls = anim.shot.balls.map(b => {
-    if (!b.potted) return { id: b.id, x: b.x, y: b.y, potted: false, q: b.q, sink: 0 };
-    // 剛落袋：滑向袋口並往下掉
-    if (anim.pottedAt[b.id] === undefined) anim.pottedAt[b.id] = Math.min(t, anim.shot.time);
-    const k = (t - anim.pottedAt[b.id]) / SINK_TIME;
-    if (k >= 1) return { id: b.id, x: 0, y: 0, potted: true };
-    const p = nearestPocket(b.x, b.y);
-    return { id: b.id, x: b.x + (p.x - b.x) * k, y: b.y + (p.y - b.y) * k, potted: false, q: b.q, sink: Math.max(0, k) };
+    if (!b.potted) return { id: b.id, x: b.x, y: b.y, potted: false, q: b.q, drop: 0 };
+    if (anim.pottedAt[b.id] === undefined) anim.pottedAt[b.id] = b.potT !== undefined ? b.potT : t;
+    const dt = t - anim.pottedAt[b.id];
+    if (dt >= SINK_TIME || !b.potV) return { id: b.id, x: 0, y: 0, potted: true };
+    return fallingBall(b, Math.max(0, dt));
   });
+}
+
+// 落袋動畫：沿落袋瞬間的速度繼續滾、持續旋轉，同時受重力往下掉；越往下越被袋壁限制在洞內
+function fallingBall(b, dt) {
+  const [vx, vy, wx, wy, wz] = b.potV;
+  const p = nearestPocket(b.x, b.y);
+  const hole = p.r + POCKET_HOLE_EXTRA;
+  const fall = 0.5 * FALL_G * dt * dt;
+  let x = b.x + vx * dt, y = b.y + vy * dt;
+  const maxDist = hole - R * Math.min(1, fall / R) + 1;
+  const dx = x - p.x, dy = y - p.y, d = Math.hypot(dx, dy);
+  if (d > maxDist) { x = p.x + dx / d * maxDist; y = p.y + dy / d * maxDist; }
+  const q = b.q.slice();
+  window.Physics.rotateQuat(q, wx, wy, wz, dt);
+  return { id: b.id, x, y, potted: false, q, drop: SLOPE_DEPTH + fall };
 }
 
 // 套用伺服器的結果。skip=true 時表示直接跳過剩下的回放
