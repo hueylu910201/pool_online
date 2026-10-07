@@ -13,14 +13,16 @@
   const CORNER_GAP = 32;     // 角袋開口：庫邊從角落算起多遠才開始
   const SIDE_GAP = 22;       // 中袋開口半寬
   const MAX_SPEED = 3600;        // 一般擊球的最大出桿速度（單位/秒，約 9 m/s）
-  const MAX_BREAK_SPEED = 5500;  // 開球的最大出桿速度（約 14 m/s，接近真實大力開球）
+  const MAX_BREAK_SPEED = 6000;  // 開球的最大出桿速度（約 15 m/s，接近真實大力開球）
   const POWER_CURVE = 1.2;       // 力道條略呈非線性：輕球好控制，但中段不會太弱
   const ROLL_DECEL = 70;     // 滾動摩擦減速度
   const SLIDE_DECEL = 620;   // 滑動摩擦減速度（決定塞的效果能維持多久）
   const SPIN_DECEL = 14;     // 側旋（左右塞）衰減，rad/s²
   const BALL_RESTITUTION = 0.95;
-  const CUSHION_RESTITUTION = 0.8;
-  const CUSHION_FRICTION = 0.22;
+  // 庫邊反彈係數隨撞擊速度下降：輕碰約 0.75，大力撞約 0.55（橡膠吸收較多能量）
+  const CUSHION_E_SLOW = 0.75, CUSHION_E_FAST = 0.55, CUSHION_E_SPEED = 2500;
+  const CUSHION_FRICTION = 0.3;
+  const CUSHION_SPIN_KEEP = 0.2; // 撞庫後保留的滾動旋轉比例（庫邊接觸點高於球心，吸收大部分前滾）
   const MAX_TIP_OFFSET = 0.5; // 擊球點最大偏離球心距離（R 的倍數）
   const HEAD_X = W * 0.25;   // 開球線
   const FOOT_X = W * 0.73;   // 置球點
@@ -56,6 +58,20 @@
 
   // 球心一越過袋口洞的邊緣（與畫面上檯布挖洞的半徑 r+3 一致）就會失去支撐而落袋
   const POCKET_HOLE_EXTRA = 3;
+  // 袋口外圍一圈微微向下的斜面：寬 SLOPE_WIDTH、洞口邊比檯面低 SLOPE_DEPTH，球在上面會被拉向袋口
+  const SLOPE_WIDTH = 9, SLOPE_DEPTH = 1.8, SLOPE_ACCEL = 260;
+
+  // 若球在某個袋口斜面上，回傳 { nx, ny, k }：指向袋口中心的單位向量與位置（0=外緣、1=洞口邊）
+  function onPocketSlope(x, y) {
+    for (const p of POCKETS) {
+      const dx = p.x - x, dy = p.y - y, d = Math.hypot(dx, dy);
+      const hole = p.r + POCKET_HOLE_EXTRA;
+      if (d >= hole && d < hole + SLOPE_WIDTH) return { nx: dx / d, ny: dy / d, k: 1 - (d - hole) / SLOPE_WIDTH };
+    }
+    return null;
+  }
+  // 畫面用：該位置的檯面比平面低多少
+  const surfaceDrop = (x, y) => { const s = onPocketSlope(x, y); return s ? s.k * SLOPE_DEPTH : 0; };
   function isPocketed(b) {
     if (b.x < 0 || b.x > W || b.y < 0 || b.y > H) return true;
     for (const p of POCKETS) {
@@ -124,7 +140,7 @@
   }
 
   // 模擬一桿。spinX：左右塞（右為正），spinY：高低桿（上為正），範圍為單位圓。
-  // 回傳逐格位置與旋轉（30fps）、音效事件、首次碰撞球、落袋球。
+  // 回傳逐格位置與旋轉（每格開頭為時間秒數；約 30fps，碰撞瞬間另外加關鍵格）、音效事件、首次碰撞球、落袋球。
   function simulateShot(ballsIn, angle, power, spinX = 0, spinY = 0, isBreak = false) {
     const balls = ballsIn.map(b => ({
       id: b.id, x: b.x, y: b.y, vx: 0, vy: 0, wx: 0, wy: 0, wz: 0,
@@ -145,19 +161,23 @@
 
     // 步長要夠細，最高速時每步移動距離仍小於球半徑，才不會穿過庫邊
     const DT = 1 / 720, RECORD_EVERY = 24, MAX_STEPS = 720 * 25;
+    let lastStep = 0;
     const frames = [], events = [];
     let firstHit = null;
     const pottedOrder = [];
     const r1 = v => Math.round(v * 10) / 10, r3 = v => Math.round(v * 1000) / 1000;
-    const record = () => {
-      const f = [];
+    let lastRecord = 0, keyNeeded = false;
+    const record = step => {
+      lastRecord = step;
+      keyNeeded = false;
+      const f = [Math.round(step * DT * 10000) / 10000];
       for (const b of balls) {
         if (b.potted) f.push(null, null, null, null, null, null);
         else f.push(r1(b.x), r1(b.y), r3(b.q[0]), r3(b.q[1]), r3(b.q[2]), r3(b.q[3]));
       }
       frames.push(f);
     };
-    record();
+    record(0);
 
     for (let step = 1; step <= MAX_STEPS; step++) {
       let moving = false;
@@ -167,7 +187,12 @@
         const ux = b.vx + R * b.wy, uy = b.vy - R * b.wx;
         const us = Math.hypot(ux, uy);
         const sp = Math.hypot(b.vx, b.vy);
-        if (sp < 2 && us < 2) {
+        const slope = onPocketSlope(b.x, b.y);
+        if (slope) {
+          b.vx += slope.nx * SLOPE_ACCEL * DT;
+          b.vy += slope.ny * SLOPE_ACCEL * DT;
+        }
+        if (sp < 2 && us < 2 && !slope) {
           b.vx = b.vy = b.wx = b.wy = 0;
         } else {
           moving = true;
@@ -191,7 +216,7 @@
         rotateQuat(b.q, b.wx, b.wy, b.wz, DT);
       }
       if (!moving) break;
-      const frameIdx = Math.floor(step / RECORD_EVERY);
+      const t = Math.round(step * DT * 10000) / 10000;
 
       // 球與球碰撞（法向衝量，旋轉保留在各自球上）
       for (let i = 0; i < 16; i++) {
@@ -214,7 +239,8 @@
           p.vx -= imp * nx; p.vy -= imp * ny;
           o.vx += imp * nx; o.vy += imp * ny;
           if (firstHit === null && (p.id === 0 || o.id === 0)) firstHit = p.id === 0 ? o.id : p.id;
-          events.push({ f: frameIdx, t: 'b', v: Math.min(1, rel / 1500) });
+          events.push({ t, type: 'b', v: Math.min(1, rel / 1500) });
+          keyNeeded = true;
         }
       }
 
@@ -231,7 +257,8 @@
           b.x = cx + nx * R; b.y = cy + ny * R;
           const vn = b.vx * nx + b.vy * ny;
           if (vn >= 0) continue;
-          const jn = -(1 + CUSHION_RESTITUTION) * vn;
+          const e = CUSHION_E_SLOW - (CUSHION_E_SLOW - CUSHION_E_FAST) * Math.min(1, -vn / CUSHION_E_SPEED);
+          const jn = -(1 + e) * vn;
           // 接觸點（-R·n）的切向滑動速度
           const tx = -ny, ty = nx;
           const ut = (b.vx + R * b.wz * ny) * tx + (b.vy - R * b.wz * nx) * ty;
@@ -241,19 +268,23 @@
           b.vx += jn * nx + jt * tx;
           b.vy += jn * ny + jt * ty;
           b.wz += (-5 * jt) / (2 * R);
-          b.vx *= 0.97; b.vy *= 0.97;
-          if (-vn > 40) events.push({ f: frameIdx, t: 'c', v: Math.min(1, -vn / 1500) });
+          b.wx *= CUSHION_SPIN_KEEP; b.wy *= CUSHION_SPIN_KEEP;
+          if (-vn > 40) events.push({ t, type: 'c', v: Math.min(1, -vn / 1500) });
+          keyNeeded = true;
         }
         if (isPocketed(b)) {
           b.potted = true; b.vx = b.vy = b.wx = b.wy = b.wz = 0;
           pottedOrder.push(b.id);
-          events.push({ f: frameIdx, t: 'p', v: 1 });
+          events.push({ t, type: 'p', v: 1 });
+          keyNeeded = true;
         }
       }
 
-      if (step % RECORD_EVERY === 0) record();
+      // 固定間隔記錄一格；碰撞瞬間另外補一格（至少間隔 1/240 秒），回放時才不會切過庫邊
+      if (step - lastRecord >= RECORD_EVERY || (keyNeeded && step - lastRecord >= 3)) record(step);
+      lastStep = step;
     }
-    record();
+    record(lastStep);
 
     return {
       frames, events, firstHit, potted: pottedOrder,
@@ -311,8 +342,8 @@
   const isCueBlocked = (balls, angle, spinX, spinY) => cueElevation(balls, angle, spinX, spinY) > CUE_MAX_ELEVATION;
 
   return {
-    W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
+    W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
     CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
-    rackBalls, simulateShot, closestOnSegment, cueElevation, isCueBlocked,
+    rackBalls, simulateShot, closestOnSegment, cueElevation, isCueBlocked, surfaceDrop,
   };
 });

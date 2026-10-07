@@ -3,12 +3,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const {
-  W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_TIP_OFFSET, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT, closestOnSegment,
+  W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_TIP_OFFSET, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT, closestOnSegment,
 } = window.Physics;
 const RAIL = 46;
 const CUSHION_H = CUSHION_HEIGHT;
 const RAIL_TOP = RAIL_HEIGHT;
-const FPS = 30; // 伺服器紀錄的影格率
 const COLORS = ['#f4f1e6', '#f2c500', '#1f4fd1', '#d42020', '#6a2c91', '#f07a00', '#13803d', '#7a1c1c', '#141414'];
 const ballColor = id => COLORS[id > 8 ? id - 8 : id];
 const groupOf = id => (id >= 1 && id <= 7 ? 'solid' : id >= 9 && id <= 15 ? 'stripe' : null);
@@ -95,7 +94,7 @@ function handle(msg) {
       shotPending = false;
       oppAim = null;
       power = 0; updatePowerBar();
-      anim = { frames: msg.frames, events: msg.events, start: performance.now(), nextEvent: 0 };
+      anim = { frames: msg.frames, events: msg.events, start: performance.now(), nextEvent: 0, idx: 0 };
       queuedState = msg.state;
       break;
     case 'aim':
@@ -352,7 +351,7 @@ function extrude(shape, depth, top, mat, bevel = 0) {
 }
 
 // 外框矩形（-16 內縮）與袋口圓的交界輪廓：inside=true 給檯布用（袋口凹進），false 給木框內緣用（袋口凸出）
-function tableOutline(inside) {
+function tableOutline(inside, extra = 0) {
   const L = -16, T = -16, Rt = W + 16, B = H + 16;
   const PW = Rt - L, PH = B - T, P = 2 * (PW + PH);
   const perim = (x, y) => {
@@ -368,7 +367,7 @@ function tableOutline(inside) {
   for (const c of [[L, T], [Rt, T], [Rt, B], [L, B]]) items.push({ s: rel(perim(c[0], c[1])), pts: [c] });
   const cuts = [];
   for (const p of POCKETS) {
-    const r = p.r + POCKET_HOLE_EXTRA;
+    const r = p.r + POCKET_HOLE_EXTRA + extra;
     const hits = [];
     for (const [ex, ey, horiz] of [[0, T, 1], [0, B, 1], [L, 0, 0], [Rt, 0, 0]]) {
       const d = horiz ? ey - p.y : ex - p.x;
@@ -445,7 +444,17 @@ function buildTable() {
   const darkWood = new THREE.MeshStandardMaterial({ color: 0x2b1408, roughness: 0.6 });
 
   // 檯布
-  extrude(new THREE.Shape(tableOutline(true)), 12, 0, feltMat).castShadow = false;
+  // 檯布挖洞比袋口大一圈，那一圈改成向下的斜面
+  extrude(new THREE.Shape(tableOutline(true, SLOPE_WIDTH)), 12, 0, feltMat).castShadow = false;
+  const slopeMat = feltMat.clone();
+  slopeMat.side = THREE.DoubleSide;
+  for (const p of POCKETS) {
+    const hole = p.r + POCKET_HOLE_EXTRA;
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(hole + SLOPE_WIDTH, hole, SLOPE_DEPTH, 48, 1, true), slopeMat);
+    ring.position.set(p.x, -SLOPE_DEPTH / 2, p.y);
+    ring.receiveShadow = true;
+    scene.add(ring);
+  }
 
   // 木框（外圓角矩形挖掉內緣與袋口）
   const outer = new THREE.Shape();
@@ -468,12 +477,12 @@ function buildTable() {
     extrude(new THREE.Shape(pts), CUSHION_H + 2, CUSHION_H, cushionMat, 0);
   }
 
-  // 袋口：黑色內襯蓋住木框的切面。檯面範圍內、檯布以上的部分剪掉，讓球從檯布高度落入
+  // 袋口：黑色內襯蓋住木框的切面。檯面範圍內、斜面底部以上的部分剪掉，讓球從斜面落入
   const L = -16, T = -16, Rt = W + 16, B = H + 16;
   const holeMat = new THREE.MeshStandardMaterial({
     color: 0x0a0a0a, roughness: 0.8, side: THREE.DoubleSide, clipIntersection: true,
     clippingPlanes: [
-      new THREE.Plane(new THREE.Vector3(0, -1, 0), 0),
+      new THREE.Plane(new THREE.Vector3(0, -1, 0), -SLOPE_DEPTH),
       new THREE.Plane(new THREE.Vector3(-1, 0, 0), L), new THREE.Plane(new THREE.Vector3(1, 0, 0), -Rt),
       new THREE.Plane(new THREE.Vector3(0, 0, -1), T), new THREE.Plane(new THREE.Vector3(0, 0, 1), -B),
     ],
@@ -586,7 +595,8 @@ function updateBallMeshes() {
     const b = balls[id];
     if (!b || b.potted) { m.visible = false; continue; }
     m.visible = true;
-    m.position.set(b.x, R - (b.sink || 0) * 2.2 * R, b.y);
+    // 在袋口斜面上時球跟著往下沉一點
+    m.position.set(b.x, R - window.Physics.surfaceDrop(b.x, b.y) - (b.sink || 0) * 2.2 * R, b.y);
     const q = b.q || [0, 0, 0, 1];
     // 物理座標 (x, y, z朝下) → three (X, Y朝上, Z)
     tmpQ.set(q[0], -q[2], q[1], q[3]);
@@ -810,22 +820,24 @@ function resize() {
 new ResizeObserver(resize).observe(view);
 
 // ---------- 動畫播放 ----------
+// 每格開頭是時間（秒）；格與格之間不等距（碰撞瞬間有額外關鍵格），依時間找出前後兩格內插
 function frameBalls(now) {
   const { frames, events } = anim;
-  const f = Math.max(0, ((now - anim.start) / 1000) * FPS);
-  const i = Math.floor(f);
-  while (anim.nextEvent < events.length && events[anim.nextEvent].f <= f) {
+  const t = Math.max(0, (now - anim.start) / 1000);
+  while (anim.nextEvent < events.length && events[anim.nextEvent].t <= t) {
     const ev = events[anim.nextEvent++];
-    playSound(ev.t, ev.v);
+    playSound(ev.type, ev.v);
   }
-  if (i >= frames.length - 1) {
-    const last = frames[frames.length - 1];
+  const last = frames[frames.length - 1];
+  if (t >= last[0]) {
     anim = null;
     setBallsFromFrame(last, last, 0);
     if (queuedState) { const s = queuedState; queuedState = null; applyState(s); }
     return;
   }
-  setBallsFromFrame(frames[i], frames[i + 1], f - i);
+  while (anim.idx < frames.length - 2 && frames[anim.idx + 1][0] <= t) anim.idx++;
+  const a = frames[anim.idx], b = frames[anim.idx + 1];
+  setBallsFromFrame(a, b, (t - a[0]) / Math.max(1e-6, b[0] - a[0]));
 }
 
 function nearestPocket(x, y) {
@@ -837,7 +849,7 @@ function nearestPocket(x, y) {
 function setBallsFromFrame(a, b, k) {
   balls = [];
   for (let id = 0; id < 16; id++) {
-    const o = id * 6;
+    const o = 1 + id * 6; // 第 0 格是時間
     if (a[o] === null) { balls.push({ id, x: 0, y: 0, potted: true }); continue; }
     const qa = a.slice(o + 2, o + 6);
     if (b[o] === null) {
