@@ -22,7 +22,7 @@ let inFlight = null;       // 進行中那一桿的 shotId（從出桿到套用�
 let endState = null;       // 伺服器送來的這一桿結果，等本地播完再套用
 let waitingSince = 0;      // 本地播完、開始等伺服器結果的時間
 let balls = [];            // 目前畫面上的球 {id,x,y,potted,q,drop}（drop：落袋時往下掉的距離）
-let anim = null;           // 進行中的本地物理回放 { shot, start, shotId, local, nextEvent, pottedAt }
+let anim = null;           // 進行中的本地物理回放 { shot, start, shotId, local, nextEvent }
 let aimAngle = Math.PI;
 let power = 0;
 let spinX = 0, spinY = 0;  // 擊球點：右為正、上為正（單位圓）
@@ -34,6 +34,7 @@ let oppAim = null;
 let cueBlocked = false;   // 目前瞄準方向的球桿是否被其他球擋住
 let lastAimSent = 0;
 let muted = localStorage.getItem('pool_muted') === '1';
+let guidesOn = localStorage.getItem('pool_guides') !== '0'; // 瞄準輔助線（預設開）
 
 function loadSession() {
   try { return JSON.parse(sessionStorage.getItem('pool_session')); } catch { return null; }
@@ -870,12 +871,9 @@ function startShot(p, local) {
   power = 0; updatePowerBar();
   inFlight = p.shotId;
   endState = null;
-  // 之前就已經進袋的球不要再播落袋動畫
-  const pottedAt = {};
-  for (const b of p.start) if (b.potted) pottedAt[b.id] = -Infinity;
   anim = {
     shot: window.Physics.createShot(p.start, p.angle, p.power, p.spinX, p.spinY, p.isBreak),
-    start: performance.now(), shotId: p.shotId, local, nextEvent: 0, pottedAt,
+    start: performance.now(), shotId: p.shotId, local, nextEvent: 0,
   };
   showSimBalls(0);
 }
@@ -897,9 +895,10 @@ function stepShot(now) {
 function showSimBalls(t) {
   balls = anim.shot.balls.map(b => {
     if (!b.potted) return { id: b.id, x: b.x, y: b.y, potted: false, q: b.q, drop: 0 };
-    if (anim.pottedAt[b.id] === undefined) anim.pottedAt[b.id] = b.potT !== undefined ? b.potT : t;
-    const dt = t - anim.pottedAt[b.id];
-    if (dt >= SINK_TIME || !b.potV) return { id: b.id, x: 0, y: 0, potted: true };
+    // 只有「這一桿」物理判定落袋的球（有落袋時間 potT）才播落袋動畫；其他已進袋的球一律不畫
+    if (b.potT === undefined || !b.potV) return { id: b.id, x: 0, y: 0, potted: true };
+    const dt = t - b.potT;
+    if (dt >= SINK_TIME) return { id: b.id, x: 0, y: 0, potted: true };
     return fallingBall(b, Math.max(0, dt));
   });
 }
@@ -973,12 +972,12 @@ function render(now) {
         breakZone.visible = g.isBreak;
       }
       if (pointerMode !== 'place') {
-        updateAim(cue.x, cue.y, aimAngle, false);
+        if (guidesOn) updateAim(cue.x, cue.y, aimAngle, false);
         blocked = placeCue(cue.x, cue.y, aimAngle, power, spinX, spinY, 1);
       }
     } else if (!isMyTurn() && oppAim) {
       if (g.ballInHand) { cue.x = oppAim.cueX; cue.y = oppAim.cueY; updateBallMeshes(); }
-      updateAim(cue.x, cue.y, oppAim.angle, true);
+      if (guidesOn) updateAim(cue.x, cue.y, oppAim.angle, true);
       placeCue(cue.x, cue.y, oppAim.angle, oppAim.power, oppAim.spinX || 0, oppAim.spinY || 0, 0.75);
     }
   }
@@ -1280,6 +1279,11 @@ const muteBtn = $('muteBtn');
 const syncMute = () => { muteBtn.textContent = muted ? '🔇' : '🔊'; };
 syncMute();
 muteBtn.onclick = () => { ensureAudio(); muted = !muted; localStorage.setItem('pool_muted', muted ? '1' : '0'); syncMute(); };
+
+const guideBtn = $('guideBtn');
+const syncGuides = () => { guideBtn.textContent = guidesOn ? '輔助線：開' : '輔助線：關'; guideBtn.classList.toggle('off', !guidesOn); };
+syncGuides();
+guideBtn.onclick = () => { guidesOn = !guidesOn; localStorage.setItem('pool_guides', guidesOn ? '1' : '0'); syncGuides(); };
 
 $('chatForm').addEventListener('submit', e => {
   e.preventDefault();

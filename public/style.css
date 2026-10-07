@@ -143,6 +143,8 @@ input:focus { border-color: var(--accent); }
   .pname { font-size: 14px; }
   .big-code { font-size: 30px; letter-spacing: 5px; }
   .view, .overlay { border-radius: 10px; }
+  .controls { flex-wrap: wrap; }
+  .power-bar { order: -1; flex-basis: 100%; }
   .view { height: 62vw; min-height: 240px; }
   .cam-btn { padding: 4px 7px; font-size: 12px; }
 }
@@ -162,3 +164,4 @@ input:focus { border-color: var(--accent); }
   position: fixed; top: 0; left: 0; right: 0; z-index: 20; padding: 10px 16px; text-align: center;
   background: #b3261e; color: #fff; font-weight: 600; font-size: 14px;
 }
+.btn.off { opacity: .6; }

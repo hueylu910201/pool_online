@@ -8,7 +8,7 @@
   else root.Physics = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   // 伺服器與網頁之間的通訊協定版本；兩邊不一致時網頁會提示或自動重新整理
-  const PROTOCOL = 2;
+  const PROTOCOL = 3;
 
   const W = 1000;            // 檯面寬（內框）
   const H = 500;             // 檯面高
