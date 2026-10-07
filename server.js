@@ -274,6 +274,9 @@ wss.on('connection', ws => {
         }
         const spinX = Math.max(-1, Math.min(1, +msg.spinX || 0));
         const spinY = Math.max(-1, Math.min(1, +msg.spinY || 0));
+        if (P.isCueBlocked(g.balls, angle, spinX, spinY)) {
+          return send(ws, { type: 'error', message: '球桿會碰到其他球，無法從這個角度出桿' });
+        }
         const sim = P.simulateShot(g.balls, angle, power, spinX, spinY);
         applyRules(g, seat, sim, room.players.map(p => p.name));
         room.players.forEach((p, i) => {

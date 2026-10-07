@@ -2,10 +2,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-const { W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_TIP_OFFSET, closestOnSegment } = window.Physics;
+const {
+  W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_TIP_OFFSET, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT, closestOnSegment,
+} = window.Physics;
 const RAIL = 46;
-const CUSHION_H = 15;
-const RAIL_TOP = 17;
+const CUSHION_H = CUSHION_HEIGHT;
+const RAIL_TOP = RAIL_HEIGHT;
 const FPS = 30; // 伺服器紀錄的影格率
 const COLORS = ['#f4f1e6', '#f2c500', '#1f4fd1', '#d42020', '#6a2c91', '#f07a00', '#13803d', '#7a1c1c', '#141414'];
 const ballColor = id => COLORS[id > 8 ? id - 8 : id];
@@ -28,6 +30,7 @@ let pullStart = null;
 let charging = null;       // 空白鍵蓄力開始時間
 let shotPending = false;
 let oppAim = null;
+let cueBlocked = false;   // 目前瞄準方向的球桿是否被其他球擋住
 let lastAimSent = 0;
 let muted = localStorage.getItem('pool_muted') === '1';
 
@@ -637,22 +640,33 @@ const cueStick = new THREE.Group();
   }
 }
 scene.add(cueStick);
-const CUE_ELEVATION = 0.09;
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3();
+const BLOCKED_GLOW = new THREE.Color(0xff1a1a), NO_GLOW = new THREE.Color(0x000000);
 
+// 擺放球桿；白球後方有障礙時自動抬高桿尾，抬到極限仍會碰到球則標成紅色並回傳 true（無法出桿）
 function placeCue(cx, cy, angle, pw, sx, sy, opacity) {
+  const elevation = window.Physics.cueElevation(balls, angle, sx, sy);
+  const blocked = elevation > CUE_MAX_ELEVATION;
+  const e = Math.min(elevation, CUE_MAX_ELEVATION);
   const d = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
   const right = new THREE.Vector3(-Math.sin(angle), 0, Math.cos(angle));
   const a = sx * MAX_TIP_OFFSET * R, b = sy * MAX_TIP_OFFSET * R;
   const depth = Math.sqrt(Math.max(0, R * R - a * a - b * b));
-  const stickDir = tmpV.copy(d).multiplyScalar(Math.cos(CUE_ELEVATION)).addScaledVector(UP, -Math.sin(CUE_ELEVATION)).normalize();
+  const stickDir = tmpV.copy(d).multiplyScalar(Math.cos(e)).addScaledVector(UP, -Math.sin(e)).normalize();
   const tip = tmpV2.set(cx, R, cy).addScaledVector(right, a).addScaledVector(UP, b).addScaledVector(d, -depth)
     .addScaledVector(stickDir, -(3 + pw * 90));
   cueStick.position.copy(tip);
   cueStick.quaternion.setFromUnitVectors(UP, stickDir);
   cueStick.visible = true;
-  cueStick.traverse(o => { if (o.material) { o.material.transparent = opacity < 1; o.material.opacity = opacity; } });
+  cueStick.traverse(o => {
+    if (!o.material) return;
+    o.material.transparent = opacity < 1;
+    o.material.opacity = opacity;
+    o.material.emissive.copy(blocked ? BLOCKED_GLOW : NO_GLOW);
+    o.material.emissiveIntensity = blocked ? 1.2 : 0;
+  });
+  return blocked;
 }
 
 // 沿瞄準方向找出第一顆會碰到的球或庫邊（桌面座標）
@@ -857,6 +871,7 @@ function render(now) {
   cueStick.visible = false;
   placeRing.visible = false;
   breakZone.visible = false;
+  let blocked = false;
   if (g && g.phase === 'playing' && !anim && cue && !cue.potted) {
     if (canShoot()) {
       if (g.ballInHand) {
@@ -867,7 +882,7 @@ function render(now) {
       }
       if (pointerMode !== 'place') {
         updateAim(cue.x, cue.y, aimAngle, false);
-        placeCue(cue.x, cue.y, aimAngle, power, spinX, spinY, 1);
+        blocked = placeCue(cue.x, cue.y, aimAngle, power, spinX, spinY, 1);
       }
     } else if (!isMyTurn() && oppAim) {
       if (g.ballInHand) { cue.x = oppAim.cueX; cue.y = oppAim.cueY; updateBallMeshes(); }
@@ -875,6 +890,7 @@ function render(now) {
       placeCue(cue.x, cue.y, oppAim.angle, oppAim.power, oppAim.spinX || 0, oppAim.spinY || 0, 0.75);
     }
   }
+  if (blocked !== cueBlocked) { cueBlocked = blocked; $('cueWarn').classList.toggle('hidden', !blocked); }
   updateCamera(now);
   renderer.render(scene, camera);
 }
@@ -1052,6 +1068,11 @@ function updatePowerBar() {
 function shoot() {
   const g = state.game;
   const cue = balls[0];
+  if (window.Physics.isCueBlocked(balls, aimAngle, spinX, spinY)) {
+    toast('球桿會碰到其他球，換個角度或擊球點');
+    power = 0; updatePowerBar();
+    return;
+  }
   if (g.ballInHand && !cueValid(cue.x, cue.y)) {
     toast('白球位置不合法，請重新擺放');
     power = 0; updatePowerBar();

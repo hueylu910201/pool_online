@@ -258,8 +258,58 @@
     };
   }
 
+  // ---------- 球桿仰角 ----------
+  // 白球後方有球或庫邊時，球桿必須抬高才不會穿過去。計算需要的最小仰角（弧度），
+  // 超過 CUE_MAX_ELEVATION 代表這個角度打不到（例如緊貼在白球正後方的球）。
+  const CUE_LENGTH = 408;
+  const CUE_MIN_ELEVATION = 0.09;
+  const CUE_MAX_ELEVATION = 0.6;  // 約 34°
+  const RAIL_HEIGHT = 17;          // 木框頂面高度
+  const CUSHION_HEIGHT = 15;       // 庫邊頂面高度
+  const cueRadiusAt = s => 1.4 + (Math.max(0, s) / CUE_LENGTH) * 1.9;
+
+  function cueElevation(balls, angle, spinX = 0, spinY = 0) {
+    const cue = balls[0];
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+    const rx = -dy, ry = dx; // 擊球者右方
+    const a = spinX * MAX_TIP_OFFSET * R, b = spinY * MAX_TIP_OFFSET * R;
+    const depth = Math.sqrt(Math.max(0, R * R - a * a - b * b));
+    const tipH = R + b; // 皮頭接觸點高度
+    // 在球桿所在的垂直面上，球桿從皮頭 (0, tipH) 往後以仰角 e 延伸；
+    // 要通過以 (s, h) 為圓心、半徑 rho 的障礙截面上方，需 (tipH-h)·cos e + s·sin e ≥ rho
+    const needFor = (s, h, rho) => {
+      const A = tipH - h, B = s, M = Math.hypot(A, B);
+      if (rho >= M) return Infinity;
+      return Math.asin(rho / M) - Math.atan2(A, B);
+    };
+    let need = CUE_MIN_ELEVATION;
+    for (const o of balls) {
+      if (o.id === 0 || o.potted) continue;
+      const ox = o.x - cue.x, oy = o.y - cue.y;
+      const s = -(ox * dx + oy * dy) - depth; // 障礙在皮頭後方多遠（水平）
+      if (s < -R || s > CUE_LENGTH + R) continue;
+      const lat = ox * rx + oy * ry - a;      // 與球桿的橫向距離
+      const reach = R + cueRadiusAt(s);
+      if (Math.abs(lat) >= reach) continue;
+      need = Math.max(need, needFor(s, R, Math.sqrt(reach * reach - lat * lat)));
+    }
+    // 庫邊與木框：只會讓球桿抬高，不會擋住出桿（白球貼庫時實際上是往下壓著打）
+    let tExit = Infinity;
+    if (dx < 0) tExit = Math.min(tExit, (W - cue.x) / -dx); else if (dx > 0) tExit = Math.min(tExit, cue.x / dx);
+    if (dy < 0) tExit = Math.min(tExit, (H - cue.y) / -dy); else if (dy > 0) tExit = Math.min(tExit, cue.y / dy);
+    const sRail = tExit - depth;
+    const railNeed = Math.max(
+      needFor(Math.max(0.5, sRail), CUSHION_HEIGHT, cueRadiusAt(sRail)),
+      needFor(sRail + 16, RAIL_HEIGHT, cueRadiusAt(sRail + 16)),
+    );
+    return Math.max(need, Math.min(railNeed, CUE_MAX_ELEVATION));
+  }
+
+  const isCueBlocked = (balls, angle, spinX, spinY) => cueElevation(balls, angle, spinX, spinY) > CUE_MAX_ELEVATION;
+
   return {
     W, H, R, POCKETS, POCKET_HOLE_EXTRA, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_TIP_OFFSET,
-    rackBalls, simulateShot, closestOnSegment,
+    CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
+    rackBalls, simulateShot, closestOnSegment, cueElevation, isCueBlocked,
   };
 });
