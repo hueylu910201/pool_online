@@ -139,9 +139,17 @@
     return a;
   }
 
-  // 模擬一桿。spinX：左右塞（右為正），spinY：高低桿（上為正），範圍為單位圓。
-  // 回傳逐格位置與旋轉（每格開頭為時間秒數；約 30fps，碰撞瞬間另外加關鍵格）、音效事件、首次碰撞球、落袋球。
-  function simulateShot(ballsIn, angle, power, spinX = 0, spinY = 0, isBreak = false) {
+  // 物理步長：要夠細，最高速時每步移動距離仍小於球半徑，才不會穿過庫邊
+  const DT = 1 / 720, MAX_STEPS = 720 * 25;
+  // 離邊界超過這個距離的球不可能碰到庫邊、袋口或袋口斜面，可以跳過那些檢查
+  const EDGE_MARGIN = R + 23;
+  const nearEdge = b => b.x < EDGE_MARGIN || b.x > W - EDGE_MARGIN || b.y < EDGE_MARGIN || b.y > H - EDGE_MARGIN;
+  const r3 = v => Math.round(v * 1000) / 1000;
+
+  // 建立一桿的逐步模擬。spinX：左右塞（右為正），spinY：高低桿（上為正），範圍為單位圓。
+  // 伺服器一次跑完取得權威結果；瀏覽器在每個畫面影格推進一點，邊算邊播，不必等整桿算完。
+  // 同樣的輸入在伺服器與瀏覽器（同為 V8 引擎）會得到完全相同的結果。
+  function createShot(ballsIn, angle, power, spinX = 0, spinY = 0, isBreak = false) {
     const balls = ballsIn.map(b => ({
       id: b.id, x: b.x, y: b.y, vx: 0, vy: 0, wx: 0, wy: 0, wz: 0,
       potted: b.potted, q: (b.q || [0, 0, 0, 1]).slice(),
@@ -149,7 +157,7 @@
     const cue = balls[0];
     const speed = Math.pow(Math.max(0.02, Math.min(1, power)), POWER_CURVE) * (isBreak ? MAX_BREAK_SPEED : MAX_SPEED);
     const dx = Math.cos(angle), dy = Math.sin(angle);
-    let sl = Math.hypot(spinX, spinY);
+    const sl = Math.hypot(spinX, spinY);
     if (sl > 1) { spinX /= sl; spinY /= sl; }
     const a = spinX * MAX_TIP_OFFSET, b = spinY * MAX_TIP_OFFSET;
     cue.vx = dx * speed; cue.vy = dy * speed;
@@ -159,27 +167,12 @@
     cue.wy = -k * b * dx;
     cue.wz = -k * a;
 
-    // 步長要夠細，最高速時每步移動距離仍小於球半徑，才不會穿過庫邊
-    const DT = 1 / 720, RECORD_EVERY = 24, MAX_STEPS = 720 * 25;
-    let lastStep = 0;
-    const frames = [], events = [];
-    let firstHit = null;
-    const pottedOrder = [];
-    const r1 = v => Math.round(v * 10) / 10, r3 = v => Math.round(v * 1000) / 1000;
-    let lastRecord = 0, keyNeeded = false;
-    const record = step => {
-      lastRecord = step;
-      keyNeeded = false;
-      const f = [Math.round(step * DT * 10000) / 10000];
-      for (const b of balls) {
-        if (b.potted) f.push(null, null, null, null, null, null);
-        else f.push(r1(b.x), r1(b.y), r3(b.q[0]), r3(b.q[1]), r3(b.q[2]), r3(b.q[3]));
-      }
-      frames.push(f);
-    };
-    record(0);
+    const shot = { balls, steps: 0, time: 0, done: false, events: [], firstHit: null, potted: [], collided: false };
 
-    for (let step = 1; step <= MAX_STEPS; step++) {
+    // 推進一個物理步長；回傳 false 表示所有球都停了
+    shot.step = () => {
+      if (shot.done) return false;
+      shot.collided = false;
       let moving = false;
       for (const b of balls) {
         if (b.potted) continue;
@@ -187,15 +180,17 @@
         const ux = b.vx + R * b.wy, uy = b.vy - R * b.wx;
         const us = Math.hypot(ux, uy);
         const sp = Math.hypot(b.vx, b.vy);
-        const slope = onPocketSlope(b.x, b.y);
+        const slope = nearEdge(b) ? onPocketSlope(b.x, b.y) : null;
         if (slope) {
           b.vx += slope.nx * SLOPE_ACCEL * DT;
           b.vy += slope.ny * SLOPE_ACCEL * DT;
         }
         if (sp < 2 && us < 2 && !slope) {
           b.vx = b.vy = b.wx = b.wy = 0;
+          b.asleep = true;
         } else {
           moving = true;
+          b.asleep = false;
           if (us > 0.5) {
             // 滑動：摩擦力反向於滑動方向，同時改變線速度與角速度
             let dv = SLIDE_DECEL * DT;
@@ -215,16 +210,17 @@
         b.x += b.vx * DT; b.y += b.vy * DT;
         rotateQuat(b.q, b.wx, b.wy, b.wz, DT);
       }
-      if (!moving) break;
-      const t = Math.round(step * DT * 10000) / 10000;
+      if (!moving || shot.steps >= MAX_STEPS) { shot.done = true; return false; }
+      shot.steps++;
+      const t = shot.time = shot.steps * DT;
 
-      // 球與球碰撞（法向衝量，旋轉保留在各自球上）
+      // 球與球碰撞（法向衝量，旋轉保留在各自球上）；兩顆都靜止的球不會互撞
       for (let i = 0; i < 16; i++) {
         const p = balls[i];
         if (p.potted) continue;
         for (let j = i + 1; j < 16; j++) {
           const o = balls[j];
-          if (o.potted) continue;
+          if (o.potted || (p.asleep && o.asleep)) continue;
           const ddx = o.x - p.x, ddy = o.y - p.y;
           const d2 = ddx * ddx + ddy * ddy;
           if (d2 >= 4 * R * R || d2 === 0) continue;
@@ -238,15 +234,16 @@
           const imp = rel * (1 + BALL_RESTITUTION) / 2;
           p.vx -= imp * nx; p.vy -= imp * ny;
           o.vx += imp * nx; o.vy += imp * ny;
-          if (firstHit === null && (p.id === 0 || o.id === 0)) firstHit = p.id === 0 ? o.id : p.id;
-          events.push({ t, type: 'b', v: Math.min(1, rel / 1500) });
-          keyNeeded = true;
+          p.asleep = o.asleep = false;
+          if (shot.firstHit === null && (p.id === 0 || o.id === 0)) shot.firstHit = p.id === 0 ? o.id : p.id;
+          shot.events.push({ t, type: 'b', v: Math.min(1, rel / 1500) });
+          shot.collided = true;
         }
       }
 
-      // 庫邊碰撞（含側旋造成的反彈角變化）與落袋
+      // 庫邊碰撞（含側旋造成的反彈角變化）與落袋：只檢查靠近邊界的球
       for (const b of balls) {
-        if (b.potted) continue;
+        if (b.potted || !nearEdge(b)) continue;
         for (const s of CUSHIONS) {
           const [cx, cy] = closestOnSegment(b.x, b.y, s);
           const ddx = b.x - cx, ddy = b.y - cy;
@@ -269,27 +266,50 @@
           b.vy += jn * ny + jt * ty;
           b.wz += (-5 * jt) / (2 * R);
           b.wx *= CUSHION_SPIN_KEEP; b.wy *= CUSHION_SPIN_KEEP;
-          if (-vn > 40) events.push({ t, type: 'c', v: Math.min(1, -vn / 1500) });
-          keyNeeded = true;
+          if (-vn > 40) shot.events.push({ t, type: 'c', v: Math.min(1, -vn / 1500) });
+          shot.collided = true;
         }
         if (isPocketed(b)) {
           b.potted = true; b.vx = b.vy = b.wx = b.wy = b.wz = 0;
-          pottedOrder.push(b.id);
-          events.push({ t, type: 'p', v: 1 });
-          keyNeeded = true;
+          shot.potted.push(b.id);
+          shot.events.push({ t, type: 'p', v: 1 });
+          shot.collided = true;
         }
       }
-
-      // 固定間隔記錄一格；碰撞瞬間另外補一格（至少間隔 1/240 秒），回放時才不會切過庫邊
-      if (step - lastRecord >= RECORD_EVERY || (keyNeeded && step - lastRecord >= 3)) record(step);
-      lastStep = step;
-    }
-    record(lastStep);
-
-    return {
-      frames, events, firstHit, potted: pottedOrder,
-      balls: balls.map(b => ({ id: b.id, x: b.x, y: b.y, potted: b.potted, q: b.q.map(r3) })),
+      return true;
     };
+
+    // 最終結果（伺服器判定規則、存成下一桿起始狀態用）
+    shot.result = () => ({
+      events: shot.events, firstHit: shot.firstHit, potted: shot.potted, duration: shot.time,
+      balls: balls.map(b => ({ id: b.id, x: b.x, y: b.y, potted: b.potted, q: b.q.map(r3) })),
+    });
+    return shot;
+  }
+
+  // 一次模擬完整一桿。opts.record=true 時另外回傳逐格位置（每格開頭為時間秒數，約 30fps，碰撞瞬間加關鍵格），供測試與除錯用
+  function simulateShot(ballsIn, angle, power, spinX = 0, spinY = 0, isBreak = false, opts = {}) {
+    const shot = createShot(ballsIn, angle, power, spinX, spinY, isBreak);
+    const frames = opts.record ? [] : null;
+    const RECORD_EVERY = 24;
+    let lastRecord = 0;
+    const record = () => {
+      lastRecord = shot.steps;
+      const f = [Math.round(shot.time * 10000) / 10000];
+      for (const b of shot.balls) {
+        if (b.potted) f.push(null, null, null, null, null, null);
+        else f.push(Math.round(b.x * 10) / 10, Math.round(b.y * 10) / 10, r3(b.q[0]), r3(b.q[1]), r3(b.q[2]), r3(b.q[3]));
+      }
+      frames.push(f);
+    };
+    if (frames) record();
+    while (shot.step()) {
+      if (frames && (shot.steps - lastRecord >= RECORD_EVERY || (shot.collided && shot.steps - lastRecord >= 3))) record();
+    }
+    if (frames) record();
+    const res = shot.result();
+    if (frames) res.frames = frames;
+    return res;
   }
 
   // ---------- 球桿仰角 ----------
@@ -344,6 +364,6 @@
   return {
     W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
     CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
-    rackBalls, simulateShot, closestOnSegment, cueElevation, isCueBlocked, surfaceDrop,
+    rackBalls, createShot, simulateShot, closestOnSegment, cueElevation, isCueBlocked, surfaceDrop,
   };
 });

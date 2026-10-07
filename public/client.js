@@ -18,9 +18,10 @@ const $ = id => document.getElementById(id);
 let ws = null;
 let session = loadSession();
 let state = null;          // 伺服器最新狀態
-let queuedState = null;    // 動畫播放中收到的狀態
+let inFlight = null;       // 進行中那一桿的 shotId（從出桿到套用伺服器結果）
+let endState = null;       // 伺服器送來的這一桿結果，等本地播完再套用
 let balls = [];            // 目前畫面上的球 {id,x,y,potted,q,sink}
-let anim = null;           // { frames, events, start, nextEvent }
+let anim = null;           // 進行中的本地物理回放 { shot, start, shotId, local, nextEvent, pottedAt }
 let aimAngle = Math.PI;
 let power = 0;
 let spinX = 0, spinY = 0;  // 擊球點：右為正、上為正（單位圓）
@@ -73,6 +74,8 @@ function act(msg) {
 function handle(msg) {
   switch (msg.type) {
     case 'joined':
+      // （重新）連上時丟掉進行中的回放，等伺服器送來的最新狀態
+      anim = null; inFlight = null; endState = null; shotPending = false;
       saveSession({ code: msg.code, token: msg.token });
       history.replaceState(null, '', '?room=' + msg.code);
       showGame();
@@ -84,18 +87,26 @@ function handle(msg) {
     case 'error':
       if ($('lobby').classList.contains('hidden')) toast(msg.message);
       else $('lobbyError').textContent = msg.message;
+      // 自己先開始播的這一桿被伺服器拒絕：取消並還原
+      if (anim && anim.local) {
+        anim = null; inFlight = null; endState = null;
+        balls = state.game.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice(), sink: 0 }));
+      }
       shotPending = false;
       break;
     case 'state':
-      if (anim) queuedState = msg;
+      // 一桿進行中時，舊的遊戲狀態不能蓋掉正在播的球；只更新玩家連線資訊
+      if (inFlight !== null) { if (state) { state.players = msg.players; renderHud(); } }
       else applyState(msg);
       break;
-    case 'shot':
-      shotPending = false;
-      oppAim = null;
-      power = 0; updatePowerBar();
-      anim = { frames: msg.frames, events: msg.events, start: performance.now(), nextEvent: 0, idx: 0 };
-      queuedState = msg.state;
+    case 'shotStart':
+      if (inFlight === msg.shotId) break; // 自己出的桿，本地已經在播（或已播完）
+      if (anim || endState) finishShot(true);                     // 上一桿還沒播完（例如分頁在背景），直接跳到結果
+      startShot(msg, false);
+      break;
+    case 'shotEnd':
+      if (inFlight === msg.shotId) { endState = msg.state; if (!anim) finishShot(); }
+      else applyState(msg.state);
       break;
     case 'aim':
       oppAim = msg;
@@ -819,25 +830,58 @@ function resize() {
 }
 new ResizeObserver(resize).observe(view);
 
-// ---------- 動畫播放 ----------
-// 每格開頭是時間（秒）；格與格之間不等距（碰撞瞬間有額外關鍵格），依時間找出前後兩格內插
-function frameBalls(now) {
-  const { frames, events } = anim;
-  const t = Math.max(0, (now - anim.start) / 1000);
-  while (anim.nextEvent < events.length && events[anim.nextEvent].t <= t) {
+// ---------- 一桿的即時物理回放 ----------
+// 出桿後在瀏覽器裡用與伺服器相同的物理逐步推進（邊算邊播），不必等伺服器回傳。
+// 播完後套用伺服器送來的權威結果（同為 V8 引擎時兩邊算出來完全一樣）。
+const SINK_TIME = 0.25; // 落袋後滑進洞裡的動畫秒數
+
+function startShot(p, local) {
+  oppAim = null;
+  power = 0; updatePowerBar();
+  inFlight = p.shotId;
+  endState = null;
+  anim = {
+    shot: window.Physics.createShot(p.start, p.angle, p.power, p.spinX, p.spinY, p.isBreak),
+    start: performance.now(), shotId: p.shotId, local, nextEvent: 0, pottedAt: {},
+  };
+  showSimBalls(0);
+}
+
+// 推進物理到目前時間；回傳 true 表示整桿（含落袋動畫）已播完
+function stepShot(now) {
+  const { shot } = anim;
+  const target = Math.max(0, (now - anim.start) / 1000);
+  while (!shot.done && shot.time < target) shot.step();
+  const { events } = shot;
+  while (anim.nextEvent < events.length && events[anim.nextEvent].t <= target) {
     const ev = events[anim.nextEvent++];
     playSound(ev.type, ev.v);
   }
-  const last = frames[frames.length - 1];
-  if (t >= last[0]) {
-    anim = null;
-    setBallsFromFrame(last, last, 0);
-    if (queuedState) { const s = queuedState; queuedState = null; applyState(s); }
-    return;
-  }
-  while (anim.idx < frames.length - 2 && frames[anim.idx + 1][0] <= t) anim.idx++;
-  const a = frames[anim.idx], b = frames[anim.idx + 1];
-  setBallsFromFrame(a, b, (t - a[0]) / Math.max(1e-6, b[0] - a[0]));
+  showSimBalls(target);
+  return shot.done && target >= shot.time + SINK_TIME;
+}
+
+function showSimBalls(t) {
+  balls = anim.shot.balls.map(b => {
+    if (!b.potted) return { id: b.id, x: b.x, y: b.y, potted: false, q: b.q, sink: 0 };
+    // 剛落袋：滑向袋口並往下掉
+    if (anim.pottedAt[b.id] === undefined) anim.pottedAt[b.id] = Math.min(t, anim.shot.time);
+    const k = (t - anim.pottedAt[b.id]) / SINK_TIME;
+    if (k >= 1) return { id: b.id, x: 0, y: 0, potted: true };
+    const p = nearestPocket(b.x, b.y);
+    return { id: b.id, x: b.x + (p.x - b.x) * k, y: b.y + (p.y - b.y) * k, potted: false, q: b.q, sink: Math.max(0, k) };
+  });
+}
+
+// 套用伺服器的結果。skip=true 時表示直接跳過剩下的回放
+function finishShot(skip) {
+  if (skip && anim) { while (anim.shot.step()); }
+  anim = null;
+  const s = endState;
+  endState = null;
+  inFlight = null;
+  shotPending = false;
+  if (s) applyState(s);
 }
 
 function nearestPocket(x, y) {
@@ -846,31 +890,15 @@ function nearestPocket(x, y) {
   return best;
 }
 
-function setBallsFromFrame(a, b, k) {
-  balls = [];
-  for (let id = 0; id < 16; id++) {
-    const o = 1 + id * 6; // 第 0 格是時間
-    if (a[o] === null) { balls.push({ id, x: 0, y: 0, potted: true }); continue; }
-    const qa = a.slice(o + 2, o + 6);
-    if (b[o] === null) {
-      // 落袋中：滑向袋口並往下掉
-      const p = nearestPocket(a[o], a[o + 1]);
-      balls.push({ id, x: a[o] + (p.x - a[o]) * k, y: a[o + 1] + (p.y - a[o + 1]) * k, potted: false, q: qa, sink: k });
-      continue;
-    }
-    const qb = b.slice(o + 2, o + 6);
-    const sgn = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3] < 0 ? -1 : 1;
-    const q = qa.map((v, j) => v * (1 - k) + qb[j] * k * sgn);
-    const n = Math.hypot(...q) || 1;
-    balls.push({ id, x: a[o] + (b[o] - a[o]) * k, y: a[o + 1] + (b[o + 1] - a[o + 1]) * k, potted: false, q: q.map(v => v / n), sink: 0 });
-  }
-}
-
 // ---------- 主迴圈 ----------
 function render(now) {
   requestAnimationFrame(render);
   if ($('game').classList.contains('hidden')) return;
-  if (anim) frameBalls(now);
+  if (anim && stepShot(now)) {
+    // 本地播完：伺服器結果已到就套用，還沒到就停在最後畫面等它
+    anim = null;
+    if (endState) finishShot();
+  }
   if (charging !== null) {
     if (canShoot()) { power = Math.min(1, (now - charging) / 1400); updatePowerBar(); sendAim(); }
     else charging = null;
@@ -1095,10 +1123,13 @@ function shoot() {
   }
   shotPending = true;
   playSound('cue', power);
+  const params = { shotId: g.shotId, angle: aimAngle, power, spinX, spinY, isBreak: g.isBreak };
   send({
-    type: 'shoot', shotId: g.shotId, angle: aimAngle, power, spinX, spinY,
+    type: 'shoot', ...params,
     cueX: g.ballInHand ? cue.x : undefined, cueY: g.ballInHand ? cue.y : undefined,
   });
+  // 不等伺服器，立刻用同樣的物理在本地開始播（起始狀態與伺服器收到的一致）
+  startShot({ ...params, start: balls.map(b => ({ id: b.id, x: b.x, y: b.y, potted: b.potted, q: (b.q || [0, 0, 0, 1]).slice() })) }, true);
   setSpin(0, 0);
   updatePowerBar();
 }
@@ -1209,7 +1240,7 @@ $('leaveBtn').onclick = () => {
   if (!confirm('確定要離開這個房間嗎？')) return;
   send({ type: 'leave' });
   saveSession(null);
-  state = null; queuedState = null; anim = null; balls = [];
+  state = null; anim = null; inFlight = null; endState = null; balls = [];
   $('chatLog').innerHTML = '';
   $('overOverlay').classList.add('hidden');
   history.replaceState(null, '', location.pathname);

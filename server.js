@@ -264,23 +264,32 @@ wss.on('connection', ws => {
       }
       case 'shoot': {
         const g = room && room.game;
-        if (!g || g.phase !== 'playing' || g.turn !== seat || !room.players[1 - seat]) return;
+        if (!g || g.phase !== 'playing' || g.turn !== seat || !room.players[1 - seat] || g.simulating) return;
         if (msg.shotId !== g.shotId) return; // 舊的或重複的出桿
         const angle = +msg.angle, power = +msg.power;
         if (!Number.isFinite(angle) || !Number.isFinite(power) || power <= 0) return;
+        const start = g.balls.map(b => ({ ...b, q: (b.q || [0, 0, 0, 1]).slice() }));
         if (g.ballInHand && msg.cueX != null) {
           if (!validCuePlacement(g, +msg.cueX, +msg.cueY)) return send(ws, { type: 'error', message: '白球位置不合法' });
-          g.balls[0].x = +msg.cueX; g.balls[0].y = +msg.cueY;
+          start[0].x = +msg.cueX; start[0].y = +msg.cueY;
         }
         const spinX = Math.max(-1, Math.min(1, +msg.spinX || 0));
         const spinY = Math.max(-1, Math.min(1, +msg.spinY || 0));
-        if (P.isCueBlocked(g.balls, angle, spinX, spinY)) {
+        if (P.isCueBlocked(start, angle, spinX, spinY)) {
           return send(ws, { type: 'error', message: '球桿會碰到其他球，無法從這個角度出桿' });
         }
-        const sim = P.simulateShot(g.balls, angle, power, spinX, spinY, g.isBreak);
-        applyRules(g, seat, sim, room.players.map(p => p.name));
-        room.players.forEach((p, i) => {
-          if (p) send(p.ws, { type: 'shot', shooter: seat, frames: sim.frames, events: sim.events, state: stateFor(room, i) });
+        // 先把出桿參數轉給雙方，讓瀏覽器立刻開始邊算邊播；伺服器再算權威結果並判定規則
+        const isBreak = g.isBreak;
+        const shotId = g.shotId;
+        broadcast(room, { type: 'shotStart', shooter: seat, shotId, angle, power, spinX, spinY, isBreak, start });
+        g.simulating = true;
+        setImmediate(() => {
+          g.simulating = false;
+          if (room.game !== g) return; // 期間有人離開、房間重置
+          g.balls = start;
+          const sim = P.simulateShot(start, angle, power, spinX, spinY, isBreak);
+          applyRules(g, seat, sim, room.players.map(p => p && p.name));
+          room.players.forEach((p, i) => { if (p) send(p.ws, { type: 'shotEnd', shotId, state: stateFor(room, i) }); });
         });
         break;
       }
