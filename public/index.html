@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>線上撞球</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎱</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 大廳 -->
+  <section id="lobby" class="screen">
+    <div class="card">
+      <h1>🎱 線上撞球</h1>
+      <p class="sub">雙人 8 號球對戰・用邀請碼找朋友一起玩</p>
+      <label class="field">
+        <span>你的暱稱</span>
+        <input id="nameInput" maxlength="16" placeholder="輸入暱稱">
+      </label>
+      <p id="inviteNote" class="invite-note hidden">你被邀請加入房間 <b id="inviteCode"></b>，輸入暱稱後按「加入」即可。</p>
+      <div class="field">
+        <span>朋友給了邀請碼？在這裡輸入</span>
+        <div class="join-row">
+          <input id="codeInput" placeholder="輸入邀請碼或貼上邀請連結" autocomplete="off">
+          <button id="joinBtn" class="btn">加入</button>
+        </div>
+      </div>
+      <div class="divider"><span>或</span></div>
+      <button id="createBtn" class="btn primary">自己建立新房間，產生邀請碼</button>
+      <p id="lobbyError" class="error"></p>
+      <details class="howto">
+        <summary>玩法說明</summary>
+        <ul>
+          <li>視角：<b>右鍵拖曳</b>旋轉、滾輪縮放（手機用兩指）；右上角可切換「球桿視角／俯視／自由視角」。</li>
+          <li>俯視／自由視角：滑鼠指向哪裡就瞄哪裡，<b>按住左鍵往後拉</b>決定力道，放開擊球。</li>
+          <li>球桿視角：<b>左鍵左右拖曳</b>轉動瞄準方向，用力道條或<b>按住空白鍵</b>蓄力，放開擊球。</li>
+          <li>加塞：點左下角的白球圖示選擇擊球點——上方為跟桿、下方為拉桿、左右為左右塞，雙擊回到中心。</li>
+          <li>手機：在球桌上拖曳瞄準，再拖動下方的<b>力道條</b>，放開擊球。</li>
+          <li>方向鍵 ← → 或畫面上的微調鈕可細調角度（按住 Shift 轉更快）。</li>
+          <li>自由球時可以直接拖曳白球擺放；開球時白球只能放在開球線左側。</li>
+          <li>開球後第一個合法進球決定分組（全色 / 花色），清完自己的球再打進 8 號球就獲勝。</li>
+          <li>犯規（白球落袋、沒碰到球、先碰到對方的球）→ 對手獲得自由球。</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
+  <!-- 遊戲 -->
+  <section id="game" class="screen hidden">
+    <header class="hud">
+      <div class="player" id="p0">
+        <div class="pname"><i class="dot"></i><span class="name"></span></div>
+        <div class="pgroup"></div>
+        <div class="chips"></div>
+      </div>
+      <div class="room">
+        <div class="room-label">邀請碼</div>
+        <button id="roomCode" class="code" title="點擊複製邀請碼"></button>
+        <button id="copyLinkSmall" class="link-btn">複製邀請連結</button>
+        <button id="leaveBtn" class="link-btn">離開房間</button>
+      </div>
+      <div class="player right" id="p1">
+        <div class="pname"><i class="dot"></i><span class="name"></span></div>
+        <div class="pgroup"></div>
+        <div class="chips"></div>
+      </div>
+    </header>
+
+    <div id="message" class="message"></div>
+
+    <div class="table-wrap">
+      <div id="view" class="view"></div>
+      <div class="cam-buttons">
+        <button class="cam-btn" data-cam="cue">球桿視角</button>
+        <button class="cam-btn" data-cam="top">俯視</button>
+        <button class="cam-btn" data-cam="free">自由視角</button>
+      </div>
+
+      <div id="waitOverlay" class="overlay hidden">
+        <div class="overlay-card">
+          <h2>等待對手加入…</h2>
+          <p>把這組邀請碼傳給朋友：</p>
+          <div id="bigCode" class="big-code"></div>
+          <div class="row">
+            <button id="copyCode" class="btn primary">複製邀請碼</button>
+            <button id="copyLink" class="btn">複製邀請連結</button>
+          </div>
+          <p class="hint">朋友打開網站後輸入邀請碼，或直接點連結就能加入。</p>
+        </div>
+      </div>
+
+      <div id="overOverlay" class="overlay hidden">
+        <div class="overlay-card">
+          <h2 id="overTitle"></h2>
+          <p id="overReason"></p>
+          <button id="rematchBtn" class="btn primary">再來一局</button>
+          <p id="rematchHint" class="hint"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="spin-box" title="點選擊球點加塞，雙擊回中心">
+        <canvas id="spinPad" width="132" height="132"></canvas>
+        <span id="spinLabel" class="spin-label">中心</span>
+      </div>
+      <button id="fineLeft" class="btn small" title="向左微調">◀</button>
+      <div id="powerBar" class="power-bar" title="拖動決定力道，放開擊球">
+        <div id="powerFill" class="power-fill"></div>
+        <span class="power-label">力道（拖動後放開擊球）</span>
+      </div>
+      <button id="fineRight" class="btn small" title="向右微調">▶</button>
+      <button id="muteBtn" class="btn small" title="音效開關">🔊</button>
+    </div>
+
+    <div class="chat">
+      <div id="chatLog" class="chat-log"></div>
+      <form id="chatForm" class="chat-form">
+        <input id="chatInput" maxlength="120" placeholder="跟對手說點什麼…" autocomplete="off">
+        <button class="btn small">送出</button>
+      </form>
+    </div>
+  </section>
+
+  <div id="toast" class="toast"></div>
+
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+  </script>
+  <script src="physics.js"></script>
+  <script type="module" src="client.js"></script>
+</body>
+</html>

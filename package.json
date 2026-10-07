@@ -1,0 +1,16 @@
+{
+  "name": "pool-online",
+  "version": "1.0.0",
+  "description": "雙人線上撞球（8 號球），用邀請碼開房對戰",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

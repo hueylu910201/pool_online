@@ -1,0 +1,8 @@
+# Render 部署設定：在 Render 選 New → Blueprint 並指定這個 repo 即可自動建立服務
+services:
+  - type: web
+    name: pool-online
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
