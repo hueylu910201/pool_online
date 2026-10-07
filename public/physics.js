@@ -12,8 +12,9 @@
   const R = 11;              // 球半徑
   const CORNER_GAP = 32;     // 角袋開口：庫邊從角落算起多遠才開始
   const SIDE_GAP = 22;       // 中袋開口半寬
-  const MAX_SPEED = 2200;    // 最大出桿速度（單位/秒）
-  const ROLL_DECEL = 190;    // 滾動摩擦減速度
+  const MAX_SPEED = 5500;    // 最大出桿速度（單位/秒，約 14 m/s，接近真實大力開球）
+  const POWER_CURVE = 1.9;   // 力道條非線性：前段細膩控制，後段才大力
+  const ROLL_DECEL = 70;     // 滾動摩擦減速度
   const SLIDE_DECEL = 620;   // 滑動摩擦減速度（決定塞的效果能維持多久）
   const SPIN_DECEL = 14;     // 側旋（左右塞）衰減，rad/s²
   const BALL_RESTITUTION = 0.95;
@@ -129,7 +130,7 @@
       potted: b.potted, q: (b.q || [0, 0, 0, 1]).slice(),
     }));
     const cue = balls[0];
-    const speed = Math.max(0.02, Math.min(1, power)) * MAX_SPEED;
+    const speed = Math.pow(Math.max(0.02, Math.min(1, power)), POWER_CURVE) * MAX_SPEED;
     const dx = Math.cos(angle), dy = Math.sin(angle);
     let sl = Math.hypot(spinX, spinY);
     if (sl > 1) { spinX /= sl; spinY /= sl; }
@@ -141,7 +142,8 @@
     cue.wy = -k * b * dx;
     cue.wz = -k * a;
 
-    const DT = 1 / 480, RECORD_EVERY = 16, MAX_STEPS = 480 * 25;
+    // 步長要夠細，最高速時每步移動距離仍小於球半徑，才不會穿過庫邊
+    const DT = 1 / 720, RECORD_EVERY = 24, MAX_STEPS = 720 * 25;
     const frames = [], events = [];
     let firstHit = null;
     const pottedOrder = [];
@@ -178,7 +180,7 @@
             b.wy += (5 / (2 * R)) * fx;
           } else {
             // 純滾動
-            const ns = Math.max(0, sp - (ROLL_DECEL + sp * 0.12) * DT);
+            const ns = Math.max(0, sp - (ROLL_DECEL + sp * 0.03) * DT);
             if (sp > 0) { b.vx *= ns / sp; b.vy *= ns / sp; }
             b.wx = b.vy / R; b.wy = -b.vx / R;
           }
