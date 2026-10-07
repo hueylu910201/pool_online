@@ -869,9 +869,12 @@ function startShot(p, local) {
   power = 0; updatePowerBar();
   inFlight = p.shotId;
   endState = null;
+  // 之前就已經進袋的球不要再播落袋動畫
+  const pottedAt = {};
+  for (const b of p.start) if (b.potted) pottedAt[b.id] = -Infinity;
   anim = {
     shot: window.Physics.createShot(p.start, p.angle, p.power, p.spinX, p.spinY, p.isBreak),
-    start: performance.now(), shotId: p.shotId, local, nextEvent: 0, pottedAt: {},
+    start: performance.now(), shotId: p.shotId, local, nextEvent: 0, pottedAt,
   };
   showSimBalls(0);
 }
