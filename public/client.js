@@ -1486,7 +1486,29 @@ muteBtn.onclick = () => { ensureAudio(); muted = !muted; localStorage.setItem('p
 const guideBtn = $('guideBtn');
 const syncGuides = () => { guideBtn.textContent = guidesOn ? '輔助線：開' : '輔助線：關'; guideBtn.classList.toggle('off', !guidesOn); };
 syncGuides();
-guideBtn.onclick = () => { guidesOn = !guidesOn; localStorage.setItem('pool_guides', guidesOn ? '1' : '0'); syncGuides(); };
+function toggleGuides() {
+  guidesOn = !guidesOn;
+  localStorage.setItem('pool_guides', guidesOn ? '1' : '0');
+  syncGuides();
+  toast(guidesOn ? '輔助線：開' : '輔助線：關');
+}
+guideBtn.onclick = toggleGuides;
+
+// 單獨按一下 Shift 切換輔助線；按著 Shift 再按其他鍵（例如 Shift + 方向鍵快速微調）則不切換
+let shiftAlone = false;
+window.addEventListener('keydown', e => {
+  if (e.key === 'Shift') { if (!e.repeat) shiftAlone = true; }
+  else shiftAlone = false;
+});
+window.addEventListener('keyup', e => {
+  if (e.key !== 'Shift' || !shiftAlone) return;
+  shiftAlone = false;
+  if (e.target.tagName === 'INPUT' || $('game').classList.contains('hidden')) return;
+  toggleGuides();
+});
+// 按著 Shift 時點滑鼠（或切換視窗）也不算單獨按 Shift
+window.addEventListener('pointerdown', () => { shiftAlone = false; });
+window.addEventListener('blur', () => { shiftAlone = false; });
 
 $('chatForm').addEventListener('submit', e => {
   e.preventDefault();
