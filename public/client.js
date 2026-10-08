@@ -35,6 +35,8 @@ let cueBlocked = false;   // 目前瞄準方向的球桿是否被其他球擋住
 let lastAimSent = 0;
 let muted = localStorage.getItem('pool_muted') === '1';
 let guidesOn = localStorage.getItem('pool_guides') !== '0'; // 瞄準輔助線（預設開）
+// 個人練功坊（單人模式，不連伺服器）：{ undo: 擊球前的快照, arrange: 擺球模式, dragId, dragFrom, dragPocket, message }
+let practice = null;
 
 function loadSession() {
   try { return JSON.parse(sessionStorage.getItem('pool_session')); } catch { return null; }
@@ -214,6 +216,7 @@ function inviteLink() {
 
 function renderHud() {
   if (!state) return;
+  if (practice) return renderPracticeHud();
   $('roomCode').textContent = state.code;
   $('bigCode').textContent = state.code;
   const g = state.game;
@@ -940,10 +943,12 @@ function render(now) {
   requestAnimationFrame(render);
   if ($('game').classList.contains('hidden')) return;
   if (anim && stepShot(now)) {
-    // 本地播完：伺服器結果已到就套用，還沒到就停在最後畫面等它
+    // 本地播完：伺服器結果已到就套用，還沒到就停在最後畫面等它（練功坊直接用本地結果）
+    const done = anim;
     anim = null;
     waitingSince = now;
-    if (endState) finishShot();
+    if (practice) finishPracticeShot(done.shot.result());
+    else if (endState) finishShot();
   }
   // 播完超過 4 秒還沒收到結果（訊息遺失、伺服器拒絕了這一桿等），主動向伺服器要目前狀態
   if (!anim && inFlight !== null && !endState && now - waitingSince > 4000) {
@@ -965,13 +970,19 @@ function render(now) {
   let blocked = false;
   if (g && g.phase === 'playing' && !anim && cue && !cue.potted) {
     if (canShoot()) {
+      if (practice && pointerMode === 'drag') {
+        const d = balls[practice.dragId];
+        placeRing.visible = true;
+        placeRing.position.set(d.x, 0.4, d.y);
+        placeRing.material.color.set(practice.dragPocket ? 0xffb020 : practiceSpotOk(d.id, d.x, d.y) ? 0xffffff : 0xff5050);
+      }
       if (g.ballInHand) {
         placeRing.visible = true;
         placeRing.position.set(cue.x, 0.4, cue.y);
         placeRing.material.color.set(cueValid(cue.x, cue.y) ? 0xffffff : 0xff5050);
         breakZone.visible = g.isBreak;
       }
-      if (pointerMode !== 'place') {
+      if (pointerMode !== 'place' && pointerMode !== 'drag' && !(practice && practice.arrange)) {
         if (guidesOn) updateAim(cue.x, cue.y, aimAngle, false);
         blocked = placeCue(cue.x, cue.y, aimAngle, power, spinX, spinY, 1);
       }
@@ -1048,6 +1059,13 @@ canvas.addEventListener('pointerdown', e => {
   const p = toTable(e);
   const cue = balls[0];
   canvas.setPointerCapture(e.pointerId);
+  const grab = practice && p ? practiceGrab(p) : null;
+  if (grab !== null) {
+    pointerMode = 'drag';
+    Object.assign(practice, { dragId: grab, dragFrom: { x: balls[grab].x, y: balls[grab].y }, dragPocket: false });
+    return;
+  }
+  if (practice && practice.arrange) return; // 擺球模式下點空白處不出桿
   if (state.game.ballInHand && p && Math.hypot(p.x - cue.x, p.y - cue.y) < R * 2.2) {
     pointerMode = 'place';
   } else if (e.pointerType === 'mouse') {
@@ -1099,6 +1117,8 @@ canvas.addEventListener('pointermove', e => {
     return;
   }
   if (!p) return;
+  if (practice && !pointerMode && e.pointerType === 'mouse') canvas.style.cursor = practiceGrab(p) !== null ? 'grab' : '';
+  if (pointerMode === 'drag') { practiceDragTo(p); return; }
   if (pointerMode === 'place') {
     balls[0].x = Math.max(R, Math.min(state.game.isBreak ? HEAD_X : W - R, p.x));
     balls[0].y = Math.max(R, Math.min(H - R, p.y));
@@ -1118,6 +1138,7 @@ function endPointer(e) {
     else { power = 0; updatePowerBar(); }
   }
   if (mode === 'place' && !cueValid(balls[0].x, balls[0].y)) toast('白球不能和其他球重疊');
+  if (mode === 'drag') practiceDrop();
 }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', e => { touches.delete(e.pointerId); rightDrag = null; pointerMode = null; power = 0; updatePowerBar(); });
@@ -1175,7 +1196,8 @@ function shoot() {
   shotPending = true;
   playSound('cue', power);
   const params = { shotId: g.shotId, angle: aimAngle, power, spinX, spinY, isBreak: g.isBreak };
-  send({
+  if (practice) practicePush(); // 存下擊球前的球形，供「復原上一桿」
+  else send({
     type: 'shoot', ...params,
     cueX: g.ballInHand ? cue.x : undefined, cueY: g.ballInHand ? cue.y : undefined,
   });
@@ -1214,6 +1236,9 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
     ensureAudio();
     if (!e.repeat && canShoot()) charging = performance.now();
+  } else if (practice && (e.key === 'z' || e.key === 'Z') && !e.repeat) {
+    e.preventDefault();
+    practiceUndo();
   }
 });
 window.addEventListener('keyup', e => {
@@ -1221,6 +1246,184 @@ window.addEventListener('keyup', e => {
   charging = null;
   if (canShoot() && power > 0.02) shoot(); else { power = 0; updatePowerBar(); }
 });
+
+// =====================================================================
+// 個人練功坊：單人模式，不連伺服器，物理一樣在瀏覽器裡跑
+// =====================================================================
+const UNDO_LIMIT = 100;
+const copyBalls = list => list.map(b => ({ id: b.id, x: b.x, y: b.y, potted: b.potted, q: (b.q || [0, 0, 0, 1]).slice(), drop: 0 }));
+
+function startPractice() {
+  ensureAudio();
+  practice = { undo: [], arrange: false, dragId: null, dragFrom: null, dragPocket: false, message: '' };
+  anim = null; inFlight = null; endState = null; shotPending = false; oppAim = null;
+  balls = copyBalls(window.Physics.rackBalls());
+  state = {
+    you: 0, code: '', players: [{ name: myName(), connected: true }, { name: '練習', connected: true }],
+    game: {
+      balls, turn: 0, groups: [null, null], ballInHand: false, isBreak: true, phase: 'playing',
+      winner: null, message: '', shotId: 0, remaining: [null, null], rematch: [false, false],
+    },
+  };
+  $('game').classList.add('practice');
+  $('waitOverlay').classList.add('hidden');
+  $('overOverlay').classList.add('hidden');
+  showGame();
+  practiceLayoutChanged('球排好了，開球吧！白球可以直接拖曳到任何位置。');
+}
+
+function exitPractice() {
+  practice = null;
+  state = null; anim = null; inFlight = null; endState = null; shotPending = false; balls = [];
+  canvas.style.cursor = '';
+  $('game').classList.remove('practice');
+  showLobby();
+}
+
+// 球形改變後：同步到 state、重設瞄準方向並更新畫面
+function practiceLayoutChanged(message) {
+  state.game.balls = balls;
+  camYaw = aimAngle = defaultAim();
+  practice.message = message;
+  renderPracticeHud();
+}
+
+function practicePush() {
+  practice.undo.push({ balls: copyBalls(balls), isBreak: state.game.isBreak, aim: aimAngle, spinX, spinY });
+  if (practice.undo.length > UNDO_LIMIT) practice.undo.shift();
+}
+
+function finishPracticeShot(res) {
+  balls = copyBalls(res.balls);
+  const potted = res.potted.filter(id => id !== 0);
+  let msg = potted.length ? `打進 ${potted.join('、')} 號` : '沒有進球';
+  if (res.potted.includes(0)) {
+    Object.assign(balls[0], window.Physics.findFreeSpot(balls, HEAD_X, H / 2), { potted: false });
+    msg += '；白球落袋，已放回開球點';
+  }
+  if (!balls.some(b => b.id !== 0 && !b.potted)) msg += '　🎉 清檯了！';
+  state.game.isBreak = false;
+  state.game.shotId++;
+  inFlight = null;
+  shotPending = false;
+  practiceLayoutChanged(msg + '。不滿意就按「復原上一桿」（Z）重打。');
+}
+
+function practiceUndo() {
+  if (!practice || anim) return;
+  const snap = practice.undo.pop();
+  if (!snap) { toast('沒有可以復原的擊球'); return; }
+  balls = copyBalls(snap.balls);
+  state.game.balls = balls;
+  state.game.isBreak = snap.isBreak;
+  camYaw = aimAngle = snap.aim; // 連瞄準方向和擊球點一起還原，方便重打同一桿
+  setSpin(snap.spinX, snap.spinY);
+  practice.message = `已復原到擊球前的球形${practice.undo.length ? `（還能再復原 ${practice.undo.length} 次）` : ''}`;
+  renderPracticeHud();
+}
+
+function practiceRack() {
+  if (anim) return;
+  practicePush();
+  balls = copyBalls(window.Physics.rackBalls());
+  state.game.isBreak = true;
+  practiceLayoutChanged('重新排好球了，這一桿有開球力道加成。');
+}
+
+// 把進袋的球放回置球點附近；ids 省略時撿回全部
+function practiceCollect(ids) {
+  if (anim) return;
+  const list = balls.filter(b => b.id !== 0 && b.potted && (!ids || ids.includes(b.id)));
+  if (!list.length) { toast('沒有進袋的球'); return; }
+  practicePush();
+  for (const b of list) Object.assign(b, window.Physics.findFreeSpot(balls, FOOT_X, H / 2, 1), { potted: false });
+  state.game.isBreak = false;
+  const hint = practice.arrange ? '拖到想要的位置吧' : '打開「擺球模式」可以拖到想要的位置';
+  practiceLayoutChanged(list.length === 1 ? `${list[0].id} 號球放回置球點附近了，${hint}` : `撿回 ${list.length} 顆球，放在置球點附近，${hint}`);
+}
+
+function practiceClear() {
+  if (anim) return;
+  practicePush();
+  for (const b of balls) if (b.id !== 0) b.potted = true;
+  state.game.isBreak = false;
+  practiceLayoutChanged('球檯清空了，只留白球。點上方的球可以一顆一顆放回來。');
+}
+
+// 找出可以拖曳的球：平常只有白球，擺球模式下任何一顆都可以
+function practiceGrab(p) {
+  let best = null, bd = Infinity;
+  for (const b of balls) {
+    if (b.potted || (!practice.arrange && b.id !== 0)) continue;
+    const d = Math.hypot(b.x - p.x, b.y - p.y);
+    const reach = b.id === 0 && !practice.arrange ? R * 2.2 : R * 1.4;
+    if (d < reach && d < bd) { bd = d; best = b.id; }
+  }
+  return best;
+}
+
+const practiceSpotOk = (id, x, y) => balls.every(o => o.id === id || o.potted || Math.hypot(o.x - x, o.y - y) >= 2 * R);
+
+function practiceDragTo(p) {
+  const b = balls[practice.dragId];
+  // 拖到袋口上方：放開就把球拿掉（白球不能拿掉）
+  const pocket = b.id !== 0 && POCKETS.find(k => Math.hypot(k.x - p.x, k.y - p.y) < k.r + POCKET_HOLE_EXTRA);
+  practice.dragPocket = !!pocket;
+  if (pocket) { b.x = pocket.x; b.y = pocket.y; b.drop = R * 0.8; return; }
+  b.x = Math.max(R, Math.min(W - R, p.x));
+  b.y = Math.max(R, Math.min(H - R, p.y));
+  b.drop = 0;
+}
+
+function practiceDrop() {
+  const b = balls[practice.dragId];
+  practice.dragId = null;
+  b.drop = 0;
+  if (practice.dragPocket) {
+    practice.dragPocket = false;
+    b.potted = true;
+    practice.message = `拿掉 ${b.id} 號球了`;
+  } else if (!practiceSpotOk(b.id, b.x, b.y)) {
+    Object.assign(b, practice.dragFrom);
+    toast('不能和其他球重疊');
+  }
+  state.game.balls = balls;
+  renderPracticeHud();
+}
+
+function renderPracticeHud() {
+  setMessage(practice.message);
+  const n = practice.undo.length;
+  $('pUndo').disabled = !n;
+  $('pUndo').textContent = `↶ 復原上一桿${n ? `（${n}）` : ''}`;
+  $('pArrange').textContent = `✋ 擺球模式：${practice.arrange ? '開' : '關'}`;
+  $('pArrange').classList.toggle('active', practice.arrange);
+  // 進袋的球列在上方，點一下放回檯面
+  const tray = $('pTray');
+  tray.innerHTML = '';
+  for (const b of balls) {
+    if (b.id === 0 || !b.potted) continue;
+    const c = chip(b.id);
+    c.title = `把 ${b.id} 號球放回檯面`;
+    c.onclick = () => practiceCollect([b.id]);
+    tray.appendChild(c);
+  }
+  updatePowerBar();
+}
+
+$('practiceBtn').onclick = startPractice;
+$('pExit').onclick = exitPractice;
+$('pUndo').onclick = practiceUndo;
+$('pRack').onclick = practiceRack;
+$('pCollect').onclick = () => practiceCollect();
+$('pClear').onclick = practiceClear;
+$('pArrange').onclick = () => {
+  practice.arrange = !practice.arrange;
+  practice.message = practice.arrange
+    ? '擺球模式：拖曳任何一顆球擺放，拖進袋口就是拿掉。擺好後再按一次回到擊球。'
+    : '回到擊球模式。白球一樣可以直接拖曳。';
+  renderPracticeHud();
+};
 
 // ---------- 加塞選擇器 ----------
 const spinPad = $('spinPad');

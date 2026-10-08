@@ -165,3 +165,19 @@ input:focus { border-color: var(--accent); }
   background: #b3261e; color: #fff; font-weight: 600; font-size: 14px;
 }
 .btn.off { opacity: .6; }
+
+/* ---------- 個人練功坊 ---------- */
+.practice-entry {
+  width: 100%; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: rgba(76, 217, 123, .12); border-color: rgba(76, 217, 123, .45);
+}
+.practice-entry small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.practice-bar { display: none; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
+.practice-title { font-weight: 800; font-size: 18px; margin-right: 6px; }
+.btn.active { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+#game.practice .practice-bar { display: flex; }
+#game.practice .hud, #game.practice .chat { display: none; }
+.p-tray { flex-basis: 100%; justify-content: center; min-height: 0; }
+.p-tray .chip { width: 24px; height: 24px; cursor: pointer; }
+.p-tray .chip b { width: 14px; height: 14px; font-size: 9px; }

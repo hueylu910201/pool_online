@@ -27,6 +27,8 @@
       </div>
       <div class="divider"><span>或</span></div>
       <button id="createBtn" class="btn primary">自己建立新房間，產生邀請碼</button>
+      <div class="divider"><span>或一個人</span></div>
+      <button id="practiceBtn" class="btn practice-entry">🎯 個人練功坊<small>自己擺球、自己打，隨時復原上一桿</small></button>
       <p id="lobbyError" class="error"></p>
       <details class="howto">
         <summary>玩法說明</summary>
@@ -37,6 +39,7 @@
           <li>手機：在球桌上拖曳瞄準，再拖動下方的<b>力道條</b>，放開擊球。</li>
           <li>方向鍵 ← → 或畫面上的微調鈕可細調角度（按住 Shift 轉更快）。</li>
           <li>「輔助線」按鈕可以開關瞄準線與目標球方向線，設定會記住。</li>
+          <li>個人練功坊：白球隨時可以拖曳；打開「擺球模式」可拖曳任何球（拖進袋口＝拿掉），「復原上一桿」（Z）回到擊球前的球形。</li>
           <li>自由球時可以直接拖曳白球擺放；開球時白球只能放在開球線左側。</li>
           <li>開球後第一個合法進球決定分組（全色 / 花色），清完自己的球再打進 8 號球就獲勝。</li>
           <li>犯規（白球落袋、沒碰到球、先碰到對方的球）→ 對手獲得自由球。</li>
@@ -65,6 +68,17 @@
         <div class="chips"></div>
       </div>
     </header>
+
+    <div id="practiceBar" class="practice-bar">
+      <span class="practice-title">🎯 個人練功坊</span>
+      <button id="pUndo" class="btn small" title="回到上一桿擊球前的球形（快捷鍵 Z）">↶ 復原上一桿</button>
+      <button id="pArrange" class="btn small" title="開啟後可以拖曳任何一顆球；拖進袋口就是把球拿掉">✋ 擺球模式：關</button>
+      <button id="pRack" class="btn small">重新排球</button>
+      <button id="pCollect" class="btn small">撿回進袋的球</button>
+      <button id="pClear" class="btn small">清空球檯</button>
+      <button id="pExit" class="btn small">回主選單</button>
+      <div id="pTray" class="chips p-tray" title="進袋的球：點一下放回檯面"></div>
+    </div>
 
     <div id="message" class="message"></div>
 

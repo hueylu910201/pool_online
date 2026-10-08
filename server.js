@@ -74,18 +74,6 @@ function remaining(game, group) {
   return game.balls.filter(b => !b.potted && groupOf(b.id) === group).length;
 }
 
-function freeSpot(balls, x, y, dir = -1) {
-  // 找一個不與其他球重疊的位置（沿 x 方向移動）
-  let px = x;
-  for (let tries = 0; tries < 200; tries++) {
-    const ok = balls.every(b => b.potted || Math.hypot(b.x - px, b.y - y) >= 2 * P.R + 0.5);
-    if (ok && px > P.R && px < P.W - P.R) return { x: px, y };
-    px += dir * 2;
-    if (px <= P.R || px >= P.W - P.R) { dir = -dir; px = x; }
-  }
-  return { x, y };
-}
-
 function validCuePlacement(game, x, y) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
   if (x < P.R || x > P.W - P.R || y < P.R || y > P.H - P.R) return false;
@@ -122,7 +110,7 @@ function applyRules(game, shooter, sim, names) {
   // 8 號球
   if (eightPotted) {
     if (wasBreak) {
-      const spot = freeSpot(game.balls, P.FOOT_X, P.H / 2, 1);
+      const spot = P.findFreeSpot(game.balls, P.FOOT_X, P.H / 2, 1);
       Object.assign(game.balls[8], spot, { potted: false });
     } else {
       game.phase = 'over';
@@ -147,7 +135,7 @@ function applyRules(game, shooter, sim, names) {
   }
 
   if (cuePotted) {
-    const spot = freeSpot(game.balls, P.HEAD_X, P.H / 2);
+    const spot = P.findFreeSpot(game.balls, P.HEAD_X, P.H / 2);
     Object.assign(game.balls[0], spot, { potted: false });
   }
 

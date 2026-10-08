@@ -8,14 +8,14 @@
   else root.Physics = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   // 伺服器與網頁之間的通訊協定版本；兩邊不一致時網頁會提示或自動重新整理
-  const PROTOCOL = 3;
+  const PROTOCOL = 4;
 
   const W = 1000;            // 檯面寬（內框）
   const H = 500;             // 檯面高
   const R = 11;              // 球半徑
   const CORNER_GAP = 32;     // 角袋開口：庫邊從角落算起多遠才開始
   const SIDE_GAP = 22;       // 中袋開口半寬
-  const MAX_SPEED = 3600;        // 一般擊球的最大出桿速度（單位/秒，約 9 m/s）
+  const MAX_SPEED = 3200;        // 一般擊球的最大出桿速度（單位/秒，約 8 m/s）
   const MAX_BREAK_SPEED = 6000;  // 開球的最大出桿速度（約 15 m/s，接近真實大力開球）
   const POWER_CURVE = 1.2;       // 力道條略呈非線性：輕球好控制，但中段不會太弱
   const ROLL_DECEL = 70;     // 滾動摩擦減速度
@@ -83,6 +83,18 @@
       if (dx * dx + dy * dy < hole * hole) return true;
     }
     return false;
+  }
+
+  // 從 (x, y) 開始沿 x 方向找一個不與其他（未落袋）球重疊的位置，用於白球放回、置球
+  function findFreeSpot(balls, x, y, dir = -1) {
+    let px = x;
+    for (let tries = 0; tries < 200; tries++) {
+      const ok = balls.every(b => b.potted || Math.hypot(b.x - px, b.y - y) >= 2 * R + 0.5);
+      if (ok && px > R && px < W - R) return { x: px, y };
+      px += dir * 2;
+      if (px <= R || px >= W - R) { dir = -dir; px = x; }
+    }
+    return { x, y };
   }
 
   // 四元數 [x,y,z,w]：依世界座標角速度 w 旋轉 dt 秒
@@ -370,6 +382,6 @@
   return {
     PROTOCOL, W, H, R, POCKETS, POCKET_HOLE_EXTRA, SLOPE_WIDTH, SLOPE_DEPTH, CUSHIONS, HEAD_X, FOOT_X, MAX_SPEED, MAX_BREAK_SPEED, POWER_CURVE, MAX_TIP_OFFSET,
     CUE_LENGTH, CUE_MIN_ELEVATION, CUE_MAX_ELEVATION, RAIL_HEIGHT, CUSHION_HEIGHT,
-    rackBalls, createShot, simulateShot, closestOnSegment, rotateQuat, cueElevation, isCueBlocked, surfaceDrop,
+    rackBalls, createShot, simulateShot, closestOnSegment, rotateQuat, findFreeSpot, cueElevation, isCueBlocked, surfaceDrop,
   };
 });
